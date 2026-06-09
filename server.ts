@@ -736,29 +736,24 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
-async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
+async function searchSinglePlatform(
+  service: "Spotify" | "Apple" | "YouTube",
+  query: string,
+  episodeTitle: string
+): Promise<{ url: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
-  debugLogs.push(`[info] Auto-search triggered for episode title: "${episodeTitle}"`);
+  debugLogs.push(`[info] [${service}] Targeted search query: \`${query}\``);
   try {
     const ai = getGemini();
-    const prompt = `Perform a web search to find the correct, official listen or watch URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik).
-Please find the following three specific links if they exist:
-1. Spotify episode link (should contain "open.spotify.com/episode/")
-2. Apple Podcasts episode link (should contain "podcasts.apple.com/")
-3. YouTube video watch link for this episode (should contain "youtube.com/watch?v=" or "youtu.be/")
+    const prompt = `Perform a web search using Google Search Grounding with exactly the following query:
+"${query}"
 
-CRITICAL FALLBACK: If a specific episode link cannot be found (e.g. because "${episodeTitle}" is newer, a draft, or unpublished), please search for and provide the official main show or channel pages for "The Rena Malik Show" on each platform:
-- Spotify show link (e.g. "https://open.spotify.com/show/5mD8Wz4mIsr...")
-- Apple Podcasts show link (e.g. "https://podcasts.apple.com/us/podcast/the-rena-malik-show/...")
-- YouTube channel link (e.g. "https://www.youtube.com/@RenaMalikMD")
+Find the official, exact URL for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" on ${service}.
 
-Do not invent fake, mock, or placeholder URLs; only provide real URLs.
-Write the links clearly as:
-Spotify: [url]
-Apple: [url]
-YouTube: [url]`;
-
-    debugLogs.push(`[info] Initializing Gemini model gemini-3.5-flash with Google Search Grounding to scan real-time web index...`);
+Requirements:
+1. Return ONLY the direct URL found.
+2. It must be a real, complete, official ${service} link.
+3. If no specific episode link exists or you cannot find it, return NOT_FOUND. Do not invent any URL.`;
 
     const modelResponse = await ai.models.generateContent({
       model: "gemini-3.5-flash",
@@ -769,72 +764,99 @@ YouTube: [url]`;
     });
 
     const outputText = modelResponse.text || "";
-    debugLogs.push(`[info] Search completed. Parsing raw textual findings...`);
-    debugLogs.push(`[raw_response] ${outputText}`);
+    debugLogs.push(`[info] [${service}] Generated Response: ${outputText.trim()}`);
 
     const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
     if (metadata) {
       if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
-        debugLogs.push(`[grounding_queries] Executed search queries: ${JSON.stringify(metadata.webSearchQueries)}`);
+        debugLogs.push(`[info] [${service}] Real Queries Run: ${JSON.stringify(metadata.webSearchQueries)}`);
       }
       if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
-        debugLogs.push(`[grounding_chunks] Scanning ${metadata.groundingChunks.length} web grounding chunks...`);
         metadata.groundingChunks.forEach((chunk) => {
           if (chunk.web?.uri) {
             debugLogs.push(` [source] "${chunk.web.title || 'Untitled'}" -> ${chunk.web.uri}`);
           }
         });
       }
-    } else {
-      debugLogs.push(`[warning] No grounding metadata retrieved. The Google Search grounder did not yield search history objects.`);
     }
 
-    let spotifyUrl = "";
-    let applePodcastsUrl = "";
-    let youtubeUrl = "";
-
-    // Parse all URLs from the output text in a highly robust way
-    const urlRegex = /(https?:\/\/[^\s\)\}\]\"\'>]+)/gi;
+    let foundUrl = "";
+    const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
     const foundUrls = outputText.match(urlRegex) || [];
-    debugLogs.push(`[info] Scanning ${foundUrls.length} extracted raw URLs for service matches...`);
 
     for (const rawUrl of foundUrls) {
       const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
-      if (!spotifyUrl && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/") || cleanUrl.includes("/show/"))) {
-        spotifyUrl = cleanUrl;
-        debugLogs.push(`[success] Matched Spotify link from text parsing: ${cleanUrl}`);
-      } else if (!applePodcastsUrl && cleanUrl.includes("podcasts.apple.com")) {
-        applePodcastsUrl = cleanUrl;
-        debugLogs.push(`[success] Matched Apple Podcasts link from text parsing: ${cleanUrl}`);
-      } else if (!youtubeUrl && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
-        youtubeUrl = cleanUrl;
-        debugLogs.push(`[success] Matched YouTube link from text parsing: ${cleanUrl}`);
+      if (service === "Spotify" && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
+        foundUrl = cleanUrl;
+        break;
+      } else if (service === "Apple" && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
+        foundUrl = cleanUrl;
+        break;
+      } else if (service === "YouTube" && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
+        foundUrl = cleanUrl;
+        break;
       }
     }
 
-    // Fallback search in grounding chunks (meta source URIs)
-    const chunks = metadata?.groundingChunks;
-    if (chunks && Array.isArray(chunks)) {
-      debugLogs.push(`[info] Performing secondary scanning of grounding chunks for platform patterns...`);
-      for (const chunk of chunks) {
+    // Secondary scan chunks
+    if (!foundUrl && metadata?.groundingChunks) {
+      for (const chunk of metadata.groundingChunks) {
         const uri = chunk.web?.uri;
         if (uri && typeof uri === "string") {
           const cleanUri = uri.trim();
-          if (!spotifyUrl && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/") || cleanUri.includes("/show/"))) {
-            spotifyUrl = cleanUri;
-            debugLogs.push(`[success] Matched Spotify link from source chunks: ${cleanUri}`);
-          } else if (!applePodcastsUrl && cleanUri.includes("podcasts.apple.com")) {
-            applePodcastsUrl = cleanUri;
-            debugLogs.push(`[success] Matched Apple Podcasts link from source chunks: ${cleanUri}`);
-          } else if (!youtubeUrl && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
-            youtubeUrl = cleanUri;
-            debugLogs.push(`[success] Matched YouTube link from source chunks: ${cleanUri}`);
+          if (service === "Spotify" && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/"))) {
+            foundUrl = cleanUri;
+            break;
+          } else if (service === "Apple" && cleanUri.includes("podcasts.apple.com") && (cleanUri.includes("/podcast/") || cleanUri.includes("/id"))) {
+            foundUrl = cleanUri;
+            break;
+          } else if (service === "YouTube" && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
+            foundUrl = cleanUri;
+            break;
           }
         }
       }
     }
 
-    // Capture fallbacks if empty
+    if (foundUrl) {
+      debugLogs.push(`[success] [${service}] Resolved exact link: ${foundUrl}`);
+      return { url: foundUrl, debugLogs };
+    } else {
+      debugLogs.push(`[warning] [${service}] No episode-specific link found.`);
+      return { url: "", debugLogs };
+    }
+  } catch (err) {
+    debugLogs.push(`[error] [${service}] Failed during search: ${err.message || err}`);
+    return { url: "", debugLogs };
+  }
+}
+
+async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
+  const debugLogs: string[] = [];
+  debugLogs.push(`[info] Starting targeted web search scans with site filters for: "${episodeTitle}"`);
+
+  let spotifyUrl = "";
+  let applePodcastsUrl = "";
+  let youtubeUrl = "";
+
+  try {
+    // Run three targeted searches in parallel for incredible speed and precision
+    const [spotifyRes, appleRes, youtubeRes] = await Promise.all([
+      searchSinglePlatform("Spotify", `site:spotify.com "Rena Malik" ${episodeTitle}`, episodeTitle),
+      searchSinglePlatform("Apple", `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`, episodeTitle),
+      searchSinglePlatform("YouTube", `site:youtube.com "Rena Malik" ${episodeTitle}`, episodeTitle)
+    ]);
+
+    // Aggregate debug logs
+    debugLogs.push(...spotifyRes.debugLogs);
+    debugLogs.push(...appleRes.debugLogs);
+    debugLogs.push(...youtubeRes.debugLogs);
+
+    spotifyUrl = spotifyRes.url;
+    applePodcastsUrl = appleRes.url;
+    youtubeUrl = youtubeRes.url;
+
+    // Fallbacks if not found
     if (!spotifyUrl) {
       spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
       debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
@@ -848,32 +870,25 @@ YouTube: [url]`;
       debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
     }
 
-    console.log(`[searchPlatformLinks] Parsed links: Spotify: "${spotifyUrl}", Apple: "${applePodcastsUrl}", YouTube: "${youtubeUrl}"`);
-
-    return { 
-      spotifyUrl, 
-      applePodcastsUrl, 
+    return {
+      spotifyUrl,
+      applePodcastsUrl,
       youtubeUrl,
       debugLogs
     };
-  } catch (err: any) {
+
+  } catch (err) {
     const errorMsg = err.message || JSON.stringify(err);
-    console.error(`[searchPlatformLinks] Failed to find links via Gemini search grounding:`, errorMsg);
-    debugLogs.push(`[error] Gemini Search Grounding crashed: ${errorMsg}`);
+    debugLogs.push(`[error] Joint search operation failed: ${errorMsg}`);
   }
-  
-  // Return absolute fallbacks with the recorded error
+
   const fallbackSpotify = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
   const fallbackApple = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
   const fallbackYoutube = "https://www.youtube.com/@RenaMalikMD";
-  debugLogs.push(`[info] Triggered catch block absolute safety fallback:`);
-  debugLogs.push(`- Spotify: ${fallbackSpotify}`);
-  debugLogs.push(`- Apple: ${fallbackApple}`);
-  debugLogs.push(`- Youtube: ${fallbackYoutube}`);
 
-  return { 
-    spotifyUrl: fallbackSpotify, 
-    applePodcastsUrl: fallbackApple, 
+  return {
+    spotifyUrl: fallbackSpotify,
+    applePodcastsUrl: fallbackApple,
     youtubeUrl: fallbackYoutube,
     debugLogs
   };
