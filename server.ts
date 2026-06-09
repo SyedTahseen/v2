@@ -855,9 +855,14 @@ async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): 
   if (serpapiApiKey) {
     debugLogs.push(`[info] [Spotify/SerpAPI] SERP_API_KEY detected. Searching SerpAPI for Spotify link...`);
     try {
-      const serpQuery = `site:open.spotify.com/episode "The Rena Malik Show" ${episodeTitle}`;
+      // Split title at typical punctuation separators to get the main/first part of the title
+      const parts = episodeTitle.split(/[?:|()\[\]-]/);
+      const mainTitlePart = parts[0]?.trim() || episodeTitle;
+      const searchQueryPart = mainTitlePart.length >= 8 ? mainTitlePart : episodeTitle;
+      
+      const serpQuery = `site:open.spotify.com/episode "Rena Malik" ${searchQueryPart}`;
       const searchUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(serpQuery)}&api_key=${serpapiApiKey}`;
-      debugLogs.push(`[info] [Spotify/SerpAPI] Calling SerpAPI Google Search...`);
+      debugLogs.push(`[info] [Spotify/SerpAPI] Calling SerpAPI Google Search with query: "${serpQuery}"`);
       const response = await fetch(searchUrl);
       if (response.ok) {
         const data: any = await response.json();
