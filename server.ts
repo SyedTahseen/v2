@@ -739,47 +739,32 @@ app.post("/api/episode-meta/:id", async (req, res) => {
 function isTitleMatch(originalTitle: string, foundTitle: string, debugLogs?: string[]): boolean {
   if (!originalTitle || !foundTitle) return false;
 
-  const getCleanWords = (text: string) => {
-    // Standardize to lowercase and replace non-alphanumeric chars with spaces
-    const cleaned = text
+  const normalize = (text: string) => {
+    return text
       .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9\s]/g, " ");
-    
-    // Split by whitespace
-    const words = cleaned.split(/\s+/).filter(Boolean);
-
-    // List of common filler/stop words to ignore for strict matching
-    const stopWords = new Set([
-      "the", "and", "for", "with", "from", "you", "your", "that", "this", 
-      "moment", "show", "rena", "malik", "episode", "podcast", "channel",
-      "some", "even", "never", "ever", "highly", "fully", "how", "why", 
-      "who", "what", "are", "was", "were", "has", "have", "had", "out",
-      "our", "not", "but", "can", "their", "them", "then", "into", "onto",
-      "its", "about", "could", "would", "should"
-    ]);
-
-    // Keep unique words longer than 2 characters that are not stop words
-    return Array.from(new Set(words.filter(w => w.length > 2 && !stopWords.has(w))));
+      // Split on standard platform delimiters: pipe symbol (|), emdash (—), endash (–), standard hyphen (-) flanked by spaces
+      .split(/\s*[\u2013\u2014|]\s*/)[0]
+      .split(/\s+-\s+/)[0]
+      // Split on guest indicators or features
+      .split(/\s+ft\.?\s+/i)[0]
+      .split(/\s+feat\.?\s+/i)[0]
+      .replace(/[^a-z0-9]/g, "") // remove all non-alphanumeric chars
+      .trim();
   };
 
-  const origWords = getCleanWords(originalTitle);
-  const foundWords = getCleanWords(foundTitle);
+  const normOrig = normalize(originalTitle);
+  const normFound = normalize(foundTitle);
 
-  if (origWords.length === 0) {
-    if (debugLogs) debugLogs.push(`  [Title Match] Warning: No key words extracted from original title "${originalTitle}". Fallback to false.`);
-    return false;
-  }
+  if (!normOrig) return false;
 
-  const matchingWords = origWords.filter(w => foundWords.includes(w));
-  const matchRatio = matchingWords.length / origWords.length;
-  // We want a high-confidence match of at least 40% of the significant words
-  const isMatch = matchRatio >= 0.40;
+  // Exact comparison or full structural containment
+  const isMatch = (normOrig === normFound || normFound.includes(normOrig) || normOrig.includes(normFound));
 
   if (debugLogs) {
-    debugLogs.push(`  [Title Match] Math Check: ${(matchRatio * 100).toFixed(0)}% (${matchingWords.length}/${origWords.length} words matched) -> ${isMatch ? "PASS" : "REJECT"}`);
-    debugLogs.push(`    Original Key Words: [${origWords.join(", ")}]`);
-    debugLogs.push(`    Candidate Key Words: [${foundWords.join(", ")}]`);
+    debugLogs.push(`  [Title Match] Compare:\n` +
+                   `    Original: "${originalTitle}" -> "${normOrig}"\n` +
+                   `    Found:    "${foundTitle}" -> "${normFound}"\n` +
+                   `    Result:   ${isMatch ? "PASS" : "REJECT"}`);
   }
 
   return isMatch;
@@ -947,7 +932,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
       const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
       debugLogs.push(` [Apple Podcast Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
       if (itemUrl.includes("podcasts.apple.com") && (itemUrl.includes("/podcast/") || itemUrl.includes("/id"))) {
-        const isMainShow = itemUrl.endsWith("/id1552319253") || itemUrl.endsWith("/id1552319253/");
+        const isMainShow = itemUrl.endsWith("/id1709412238") || itemUrl.endsWith("/id1709412238/");
         if (!isMainShow && isMatch) {
           applePodcastsUrl = itemUrl;
           debugLogs.push(`[success] [Apple Podcasts] Resolved exact level episode link: ${applePodcastsUrl}`);
@@ -959,15 +944,15 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
 
   // 4. Default Fail-Safes if not found
   if (!spotifyUrl) {
-    spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
+    spotifyUrl = "https://open.spotify.com/show/30xyW3ExCD3f9FZR8Wf2Mn";
     debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
   }
   if (!applePodcastsUrl) {
-    applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
+    applePodcastsUrl = "https://podcasts.apple.com/us/podcast/rena-malik-md-podcast/id1709412238";
     debugLogs.push(`[warning] Apple Podcasts episode-specific link search failed. Defaulted to show: ${applePodcastsUrl}`);
   }
   if (!youtubeUrl) {
-    youtubeUrl = "https://www.youtube.com/@RenaMalikMD";
+    youtubeUrl = "https://youtube.com/@renamalikmd";
     debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
   }
 
@@ -1317,7 +1302,7 @@ app.get("/api/youtube", async (req, res) => {
     return res.json(FALLBACK_YOUTUBE_DATA);
   }
 
-  const handle = process.env.YOUTUBE_CHANNEL_HANDLE || "@RenaMalikMD";
+  const handle = process.env.YOUTUBE_CHANNEL_HANDLE || "@renamalikmd";
   console.log(`[YouTube API] Key detected. Fetching live channels & playlists for user handle: ${handle}`);
 
   try {

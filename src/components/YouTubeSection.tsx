@@ -244,7 +244,7 @@ export default function YouTubeSection() {
             <div className="flex items-center gap-4">
               <a
                 id="join-youtube-channel"
-                href="https://www.youtube.com/@RenaMalikMD?sub_confirmation=1"
+                href="https://www.youtube.com/@renamalikmd?sub_confirmation=1"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-8 py-3.5 rounded-full border border-accent bg-transparent hover:bg-accent hover:text-zinc-950 text-white text-xs font-bold tracking-widest uppercase transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] flex items-center gap-2 cursor-pointer group"
