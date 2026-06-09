@@ -743,9 +743,15 @@ async function searchSinglePlatform(
 ): Promise<{ url: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
   debugLogs.push(`[info] [${service}] Targeted search query: \`${query}\``);
-  try {
-    const ai = getGemini();
-    const prompt = `Perform a web search using Google Search Grounding with exactly the following query:
+
+  let attempts = 0;
+  const maxAttempts = 3;
+  let delayMs = 3000;
+
+  while (attempts < maxAttempts) {
+    try {
+      const ai = getGemini();
+      const prompt = `Perform a web search using Google Search Grounding with exactly the following query:
 "${query}"
 
 Find the official, exact URL for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" on ${service}.
@@ -755,105 +761,124 @@ Requirements:
 2. It must be a real, complete, official ${service} link.
 3. If no specific episode link exists or you cannot find it, return NOT_FOUND. Do not invent any URL.`;
 
-    const modelResponse = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }]
+      const modelResponse = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }]
+        }
+      });
+
+      const outputText = modelResponse.text || "";
+      debugLogs.push(`[info] [${service}] Generated Response: ${outputText.trim()}`);
+
+      const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
+      if (metadata) {
+        if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
+          debugLogs.push(`[info] [${service}] Real Queries Run: ${JSON.stringify(metadata.webSearchQueries)}`);
+        }
+        if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
+          metadata.groundingChunks.forEach((chunk) => {
+            if (chunk.web?.uri) {
+              debugLogs.push(` [source] "${chunk.web.title || 'Untitled'}" -> ${chunk.web.uri}`);
+            }
+          });
+        }
       }
-    });
 
-    const outputText = modelResponse.text || "";
-    debugLogs.push(`[info] [${service}] Generated Response: ${outputText.trim()}`);
+      let foundUrl = "";
+      const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
+      const foundUrls = outputText.match(urlRegex) || [];
 
-    const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
-    if (metadata) {
-      if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
-        debugLogs.push(`[info] [${service}] Real Queries Run: ${JSON.stringify(metadata.webSearchQueries)}`);
+      for (const rawUrl of foundUrls) {
+        const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
+        if (service === "Spotify" && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
+          foundUrl = cleanUrl;
+          break;
+        } else if (service === "Apple" && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
+          foundUrl = cleanUrl;
+          break;
+        } else if (service === "YouTube" && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
+          foundUrl = cleanUrl;
+          break;
+        }
       }
-      if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
-        metadata.groundingChunks.forEach((chunk) => {
-          if (chunk.web?.uri) {
-            debugLogs.push(` [source] "${chunk.web.title || 'Untitled'}" -> ${chunk.web.uri}`);
-          }
-        });
-      }
-    }
 
-    let foundUrl = "";
-    const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
-    const foundUrls = outputText.match(urlRegex) || [];
-
-    for (const rawUrl of foundUrls) {
-      const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
-      if (service === "Spotify" && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
-        foundUrl = cleanUrl;
-        break;
-      } else if (service === "Apple" && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
-        foundUrl = cleanUrl;
-        break;
-      } else if (service === "YouTube" && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
-        foundUrl = cleanUrl;
-        break;
-      }
-    }
-
-    // Secondary scan chunks
-    if (!foundUrl && metadata?.groundingChunks) {
-      for (const chunk of metadata.groundingChunks) {
-        const uri = chunk.web?.uri;
-        if (uri && typeof uri === "string") {
-          const cleanUri = uri.trim();
-          if (service === "Spotify" && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/"))) {
-            foundUrl = cleanUri;
-            break;
-          } else if (service === "Apple" && cleanUri.includes("podcasts.apple.com") && (cleanUri.includes("/podcast/") || cleanUri.includes("/id"))) {
-            foundUrl = cleanUri;
-            break;
-          } else if (service === "YouTube" && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
-            foundUrl = cleanUri;
-            break;
+      // Secondary scan chunks
+      if (!foundUrl && metadata?.groundingChunks) {
+        for (const chunk of metadata.groundingChunks) {
+          const uri = chunk.web?.uri;
+          if (uri && typeof uri === "string") {
+            const cleanUri = uri.trim();
+            if (service === "Spotify" && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/"))) {
+              foundUrl = cleanUri;
+              break;
+            } else if (service === "Apple" && cleanUri.includes("podcasts.apple.com") && (cleanUri.includes("/podcast/") || cleanUri.includes("/id"))) {
+              foundUrl = cleanUri;
+              break;
+            } else if (service === "YouTube" && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
+              foundUrl = cleanUri;
+              break;
+            }
           }
         }
       }
-    }
 
-    if (foundUrl) {
-      debugLogs.push(`[success] [${service}] Resolved exact link: ${foundUrl}`);
-      return { url: foundUrl, debugLogs };
-    } else {
-      debugLogs.push(`[warning] [${service}] No episode-specific link found.`);
+      if (foundUrl) {
+        debugLogs.push(`[success] [${service}] Resolved exact link: ${foundUrl}`);
+        return { url: foundUrl, debugLogs };
+      } else {
+        debugLogs.push(`[warning] [${service}] No episode-specific link found.`);
+        return { url: "", debugLogs };
+      }
+
+    } catch (err: any) {
+      const errStr = err.message || JSON.stringify(err);
+      const isRateLimit = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.includes("RESOURCE_EXHAUSTED");
+
+      if (isRateLimit && attempts < maxAttempts - 1) {
+        attempts++;
+        debugLogs.push(`[warning] [${service}] Hit rate limit (429/quota). Retrying in ${delayMs / 1000}s (Attempt ${attempts}/${maxAttempts})...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        delayMs *= 2; // exponential backoff
+        continue;
+      }
+
+      debugLogs.push(`[error] [${service}] Failed during search: ${errStr}`);
       return { url: "", debugLogs };
     }
-  } catch (err) {
-    debugLogs.push(`[error] [${service}] Failed during search: ${err.message || err}`);
-    return { url: "", debugLogs };
   }
+
+  debugLogs.push(`[error] [${service}] Exceeded maximum retry attempts due to persistent rate/quota limits.`);
+  return { url: "", debugLogs };
 }
 
 async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
-  debugLogs.push(`[info] Starting targeted web search scans with site filters for: "${episodeTitle}"`);
+  debugLogs.push(`[info] Starting targeted sequential web search scans with site filters for: "${episodeTitle}"`);
 
   let spotifyUrl = "";
   let applePodcastsUrl = "";
   let youtubeUrl = "";
 
   try {
-    // Run three targeted searches in parallel for incredible speed and precision
-    const [spotifyRes, appleRes, youtubeRes] = await Promise.all([
-      searchSinglePlatform("Spotify", `site:spotify.com "Rena Malik" ${episodeTitle}`, episodeTitle),
-      searchSinglePlatform("Apple", `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`, episodeTitle),
-      searchSinglePlatform("YouTube", `site:youtube.com "Rena Malik" ${episodeTitle}`, episodeTitle)
-    ]);
-
-    // Aggregate debug logs
+    // Run sequentially with pauses in between to avoid concurrent 429 quota exceptions
+    const spotifyRes = await searchSinglePlatform("Spotify", `site:spotify.com "Rena Malik" ${episodeTitle}`, episodeTitle);
     debugLogs.push(...spotifyRes.debugLogs);
-    debugLogs.push(...appleRes.debugLogs);
-    debugLogs.push(...youtubeRes.debugLogs);
-
     spotifyUrl = spotifyRes.url;
+
+    debugLogs.push(`[info] Pausing 2.5 seconds before starting Apple search to prevent quota collisions...`);
+    await new Promise(resolve => setTimeout(resolve, 2500));
+
+    const appleRes = await searchSinglePlatform("Apple", `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`, episodeTitle);
+    debugLogs.push(...appleRes.debugLogs);
     applePodcastsUrl = appleRes.url;
+
+    debugLogs.push(`[info] Pausing 2.5 seconds before starting YouTube search to prevent quota collisions...`);
+    await new Promise(resolve => setTimeout(resolve, 2500));
+
+    const youtubeRes = await searchSinglePlatform("YouTube", `site:youtube.com "Rena Malik" ${episodeTitle}`, episodeTitle);
+    debugLogs.push(...youtubeRes.debugLogs);
     youtubeUrl = youtubeRes.url;
 
     // Fallbacks if not found
@@ -877,7 +902,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
       debugLogs
     };
 
-  } catch (err) {
+  } catch (err: any) {
     const errorMsg = err.message || JSON.stringify(err);
     debugLogs.push(`[error] Joint search operation failed: ${errorMsg}`);
   }
