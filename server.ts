@@ -768,32 +768,34 @@ YouTube: [url]`;
     let applePodcastsUrl = "";
     let youtubeUrl = "";
 
-    // Parse the URLs from the response text using regex
-    const spotifyRegex = /(https?:\/\/(?:open|play)\.spotify\.com\/episode\/[ a-zA-Z0-9_\-\?=&%\+]+)/i;
-    const appleRegex = /(https?:\/\/podcasts\.apple\.com\/[ a-zA-Z0-9_\-\/\?=&%\+]+)/i;
-    const youtubeRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)[ a-zA-Z0-9_\-\?=&%\+]+)/i;
+    // Parse all URLs from the output text in a highly robust way
+    const urlRegex = /(https?:\/\/[^\s\)\}\]\"\'>]+)/gi;
+    const foundUrls = outputText.match(urlRegex) || [];
+    for (const rawUrl of foundUrls) {
+      // Clean up punctuation or markup endings (like brackets or periods)
+      const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
+      if (!spotifyUrl && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
+        spotifyUrl = cleanUrl;
+      } else if (!applePodcastsUrl && cleanUrl.includes("podcasts.apple.com")) {
+        applePodcastsUrl = cleanUrl;
+      } else if (!youtubeUrl && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
+        youtubeUrl = cleanUrl;
+      }
+    }
 
-    const spotifyMatch = outputText.match(spotifyRegex);
-    if (spotifyMatch) spotifyUrl = spotifyMatch[1].trim();
-
-    const appleMatch = outputText.match(appleRegex);
-    if (appleMatch) applePodcastsUrl = appleMatch[1].trim();
-
-    const youtubeMatch = outputText.match(youtubeRegex);
-    if (youtubeMatch) youtubeUrl = youtubeMatch[1].trim();
-
-    // Fallback: If any link is missing, check groundingMetadata chunks
+    // Fallback: If any link is missing, check groundingMetadata chunks from Google Search Grounding
     const chunks = modelResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
     if (chunks && Array.isArray(chunks)) {
       for (const chunk of chunks) {
         const uri = chunk.web?.uri;
         if (uri && typeof uri === "string") {
-          if (!spotifyUrl && /spotify\.com/i.test(uri)) {
-            spotifyUrl = uri.trim();
-          } else if (!applePodcastsUrl && /podcasts\.apple\.com/i.test(uri)) {
-            applePodcastsUrl = uri.trim();
-          } else if (!youtubeUrl && /(youtube\.com|youtu\.be)/i.test(uri)) {
-            youtubeUrl = uri.trim();
+          const cleanUri = uri.trim();
+          if (!spotifyUrl && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/"))) {
+            spotifyUrl = cleanUri;
+          } else if (!applePodcastsUrl && cleanUri.includes("podcasts.apple.com")) {
+            applePodcastsUrl = cleanUri;
+          } else if (!youtubeUrl && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
+            youtubeUrl = cleanUri;
           }
         }
       }

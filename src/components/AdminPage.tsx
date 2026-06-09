@@ -124,6 +124,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
   const [geminiSuccess, setGeminiSuccess] = useState<boolean>(false);
   const [geminiStep, setGeminiStep] = useState<string>("");
   const [geminiModel, setGeminiModel] = useState<string>((import.meta as any).env?.VITE_GEMINI_MODEL || "gemini-3.5-flash");
+  const [isGrabbingLinks, setIsGrabbingLinks] = useState(false);
+  const [grabLinksStatus, setGrabLinksStatus] = useState<"idle" | "success" | "error" | "no-links">("idle");
   const [customPrompt, setCustomPrompt] = useState<string>(
     "Please transcribe this podcast or show episode audio file. Generate a detailed, highly accurate transcript with Speaker Names and Timestamps in brackets (e.g., [12:30] Guest Speaker: text...) and split paragraphs cleanly. Also, extract 4-8 distinct seeker-friendly chapters/segment timestamps with MM:SS formatted times and concise, elegant segment labels."
   );
@@ -716,6 +718,49 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       clearInterval(stepInterval);
       setGeminiError(err.message || "Failed to generate metadata details using Gemini.");
       setIsGeneratingGemini(false);
+    }
+  };
+
+  const handleAutoGrabLinks = async () => {
+    const selectedEpisode = episodes.find(e => e.id === selectedEpisodeId);
+    if (!selectedEpisode || !authToken) return;
+    setIsGrabbingLinks(true);
+    setGrabLinksStatus("idle");
+    try {
+      const response = await fetch("/api/admin/auto-grab-links", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          title: selectedEpisode.title
+        })
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to grab links");
+      }
+
+      const hasAnyLink = !!(result.spotifyUrl || result.applePodcastsUrl || result.youtubeUrl);
+      
+      setSpotifyUrl(result.spotifyUrl || "");
+      setApplePodcastsUrl(result.applePodcastsUrl || "");
+      setYoutubeUrl(result.youtubeUrl || "");
+      
+      setGrabLinksStatus(hasAnyLink ? "success" : "no-links");
+      
+      setTimeout(() => {
+        setGrabLinksStatus("idle");
+      }, 4000);
+    } catch (err) {
+      setGrabLinksStatus("error");
+      setTimeout(() => {
+        setGrabLinksStatus("idle");
+      }, 4000);
+    } finally {
+      setIsGrabbingLinks(false);
     }
   };
 
@@ -1792,7 +1837,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                           <CheckCircle size={15} className="shrink-0 text-emerald-400 mt-0.5" />
                           <div>
                             <span className="block font-black uppercase tracking-wider text-[10px] text-emerald-500 mb-0.5">Success</span>
-                            <span>High-fidelity dialogue transcript & chapter timestamps generated successfully. Please review the populated timestamps/text panels, then lock the details using the "SAVE" action.</span>
+                            <span>High-fidelity transcript, chapter timestamps & platform links auto-fetched using Gemini Search Grounding successfully. Please review the populated metadata panels, then lock the details using the "SAVE" action.</span>
                           </div>
                         </div>
                       )}
@@ -2213,6 +2258,50 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                             {isEditingLinks ? (
                               /* Interactive Input Form */
                               <div className="flex flex-col gap-4">
+                                <div className="flex items-center justify-between border-b border-zinc-900 pb-3.5 flex-wrap gap-3">
+                                  <div>
+                                    <h4 className="text-xs font-bold text-zinc-300 uppercase tracking-widest">Auto-Detect Platform Links</h4>
+                                    <p className="text-[10px] text-zinc-500 mt-1 font-sans">Leverages Gemini Search Grounding to scour the live web for this episode's links</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={handleAutoGrabLinks}
+                                    disabled={isGrabbingLinks || !selectedEpisode}
+                                    className="px-4.5 py-2 rounded-full border border-emerald-500/25 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-400 font-bold text-[10px] uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-40 select-none"
+                                  >
+                                    {isGrabbingLinks ? (
+                                      <>
+                                        <div className="w-3 h-3 rounded-full border-2 border-emerald-400 border-t-transparent animate-spin" />
+                                        Searching...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Sparkles size={11} className="text-emerald-400" />
+                                        AUTO-GRAB WITH GEMINI
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+
+                                {grabLinksStatus === "success" && (
+                                  <div className="text-[11px] text-emerald-400 bg-emerald-950/10 border border-emerald-900/20 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold uppercase tracking-wider animate-fade-in">
+                                    <CheckCircle size={13} className="shrink-0" />
+                                    <span>Successfully auto-grabbed listen URLs from web!</span>
+                                  </div>
+                                )}
+                                {grabLinksStatus === "no-links" && (
+                                  <div className="text-[11px] text-amber-500 bg-amber-950/10 border border-amber-900/20 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold uppercase tracking-wider animate-fade-in">
+                                    <AlertCircle size={13} className="shrink-0" />
+                                    <span>Gemini Search couldn't locate specific links for this episode.</span>
+                                  </div>
+                                )}
+                                {grabLinksStatus === "error" && (
+                                  <div className="text-[11px] text-red-400 bg-red-950/10 border border-red-900/20 px-3.5 py-2.5 rounded-xl flex items-center gap-2 font-bold uppercase tracking-wider animate-fade-in">
+                                    <AlertCircle size={13} className="shrink-0" />
+                                    <span>Server error searching platform links with Gemini.</span>
+                                  </div>
+                                )}
+
                                 <div className="flex flex-col gap-2">
                                   <label className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
                                     Spotify URL
