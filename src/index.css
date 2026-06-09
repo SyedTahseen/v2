@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --color-page-bg: #1f1f1f;
+  --color-header-bg: #2e2e2e;
+  --color-footer-bg: #323232;
+  --color-card-pill: #363636;
+  --color-accent-navy: #1A2238;
+  --color-accent-blue: #9DAAF2;
+  --color-accent-yellow: #F4DB7D;
+}
+
+/* Custom class for accent-colored text and styling matching our main light blue accent */
+.text-accent {
+  color: #9DAAF2;
+}
+
+.bg-accent {
+  background-color: #9DAAF2;
+}
+
+.border-accent {
+  border-color: #9DAAF2;
+}
+
+/* Base resets to match design constraints */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #1f1f1f;
+  color: #fff;
+  font-family: var(--font-sans);
+}
+
