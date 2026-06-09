@@ -736,6 +736,30 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
+function isTitleMatch(originalTitle: string, foundTitle: string): boolean {
+  const cleanWords = (text: string) => {
+    return text
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !["the", "and", "for", "with", "from", "you", "your", "that", "this", "moment", "show", "rena", "malik", "episode", "podcast", "channel"].includes(w));
+  };
+  const origWords = cleanWords(originalTitle);
+  const foundWords = cleanWords(foundTitle);
+  if (origWords.length === 0) return true; // fallback if no significant words in original
+  
+  let matches = 0;
+  for (const word of origWords) {
+    if (foundWords.includes(word)) {
+      matches++;
+    }
+  }
+  
+  // We want at least 2 matching significant words or 30% of the original significant words
+  const threshold = Math.min(2, Math.ceil(origWords.length * 0.3));
+  return matches >= threshold;
+}
+
 async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
   debugLogs.push(`[info] Starting optimized targeted web search scans for: "${episodeTitle}"`);
@@ -749,20 +773,34 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
   if (youtubeApiKey) {
     debugLogs.push(`[info] [YouTube] API Key detected. Launching high-precision native search...`);
     try {
-      const youtubeSearchQuery = `Rena Malik ${episodeTitle}`;
-      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
+      const youtubeSearchQuery = `"Rena Malik" ${episodeTitle}`;
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
       
       const response = await fetch(searchUrl);
       if (response.ok) {
         const data: any = await response.json();
         if (data && data.items && data.items.length > 0) {
-          const firstVideo = data.items[0];
-          const videoId = firstVideo.id?.videoId;
-          if (videoId) {
-            youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-            debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${firstVideo.snippet?.title || 'Unknown'}"`);
+          debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from API...`);
+          
+          let matchedItem = null;
+          for (const item of data.items) {
+            const videoTitle = item.snippet?.title || "";
+            const isMatch = isTitleMatch(episodeTitle, videoTitle);
+            debugLogs.push(` [YouTube Scan] Checked: "${videoTitle}" | Is Title Match? ${isMatch ? "YES" : "NO"}`);
+            if (isMatch) {
+              matchedItem = item;
+              break;
+            }
+          }
+
+          if (matchedItem) {
+            const videoId = matchedItem.id?.videoId;
+            if (videoId) {
+              youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+              debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${matchedItem.snippet?.title || 'Unknown'}"`);
+            }
           } else {
-            debugLogs.push(`[warning] [YouTube] API returned items but videoId was not present.`);
+            debugLogs.push(`[warning] [YouTube] None of the top ${data.items.length} search results passed title similarity checking. Rejecting potential mismatch.`);
           }
         } else {
           debugLogs.push(`[warning] [YouTube] No items returned from the search API.`);
