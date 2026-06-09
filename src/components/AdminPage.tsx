@@ -126,6 +126,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
   const [geminiModel, setGeminiModel] = useState<string>((import.meta as any).env?.VITE_GEMINI_MODEL || "gemini-3.5-flash");
   const [isGrabbingLinks, setIsGrabbingLinks] = useState(false);
   const [grabLinksStatus, setGrabLinksStatus] = useState<"idle" | "success" | "error" | "no-links">("idle");
+  const [grabLinksDebugLogs, setGrabLinksDebugLogs] = useState<string[]>([]);
+  const [showDebugConsole, setShowDebugConsole] = useState<boolean>(true);
   const [customPrompt, setCustomPrompt] = useState<string>(
     "Please transcribe this podcast or show episode audio file. Generate a detailed, highly accurate transcript with Speaker Names and Timestamps in brackets (e.g., [12:30] Guest Speaker: text...) and split paragraphs cleanly. Also, extract 4-8 distinct seeker-friendly chapters/segment timestamps with MM:SS formatted times and concise, elegant segment labels."
   );
@@ -705,6 +707,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setSpotifyUrl(result.spotifyUrl || "");
       setApplePodcastsUrl(result.applePodcastsUrl || "");
       setYoutubeUrl(result.youtubeUrl || "");
+      setGrabLinksDebugLogs(result.searchDebugLogs || []);
       setGeminiSuccess(true);
       
       // Auto-switch to chapters/timestamps view
@@ -726,6 +729,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
     if (!selectedEpisode || !authToken) return;
     setIsGrabbingLinks(true);
     setGrabLinksStatus("idle");
+    setGrabLinksDebugLogs([]); // reset
     try {
       const response = await fetch("/api/admin/auto-grab-links", {
         method: "POST",
@@ -748,14 +752,16 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setSpotifyUrl(result.spotifyUrl || "");
       setApplePodcastsUrl(result.applePodcastsUrl || "");
       setYoutubeUrl(result.youtubeUrl || "");
+      setGrabLinksDebugLogs(result.debugLogs || []);
       
       setGrabLinksStatus(hasAnyLink ? "success" : "no-links");
       
       setTimeout(() => {
         setGrabLinksStatus("idle");
       }, 4000);
-    } catch (err) {
+    } catch (err: any) {
       setGrabLinksStatus("error");
+      setGrabLinksDebugLogs([`[error] Client-side failure calling /api/admin/auto-grab-links: ${err.message || err}`]);
       setTimeout(() => {
         setGrabLinksStatus("idle");
       }, 4000);
@@ -2471,6 +2477,46 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                                 )}
                               </>
                             )}
+
+                            {/* Gemini Search Diagnostics Terminal */}
+                            {grabLinksDebugLogs.length > 0 && (
+                              <div className="mt-4 border border-zinc-900 rounded-xl overflow-hidden bg-zinc-950/40 animate-fade-in text-left">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDebugConsole(!showDebugConsole)}
+                                  className="w-full flex flex-row items-center justify-between px-4 py-3 bg-zinc-950/80 border-b border-zinc-900 text-[10px] sm:text-xs font-bold text-zinc-400 uppercase tracking-wider hover:text-white transition-colors cursor-pointer"
+                                >
+                                  <div className="flex items-center gap-1.5 flex-1">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                    <span>Gemini Web Search Diagnostics</span>
+                                  </div>
+                                  <span>{showDebugConsole ? "Collapse Logs" : "Expand Logs"}</span>
+                                </button>
+                                {showDebugConsole && (
+                                  <div className="p-4 font-mono text-[10px] leading-relaxed text-zinc-500 bg-zinc-950/95 overflow-y-auto max-h-[250px] scrollbar-thin flex flex-col gap-1.5 select-text">
+                                    {grabLinksDebugLogs.map((log, idx) => {
+                                      let styleClass = "text-zinc-500";
+                                      if (log.startsWith("[info]")) styleClass = "text-emerald-400";
+                                      else if (log.startsWith("[prompt]")) styleClass = "text-zinc-400 font-bold font-sans";
+                                      else if (log.startsWith("[raw_response]")) styleClass = "text-amber-300 font-sans whitespace-pre-wrap brightness-90 bg-zinc-900/40 p-2 rounded-md border border-zinc-850 my-1 self-stretch";
+                                      else if (log.startsWith("[grounding_queries]")) styleClass = "text-[#9DAAF2] bg-[#9DAAF2]/5 px-2 py-0.5 rounded";
+                                      else if (log.startsWith("[grounding_chunks]")) styleClass = "text-[#9DAAF2]/80 font-semibold";
+                                      else if (log.startsWith("[warning]")) styleClass = "text-amber-500 font-semibold";
+                                      else if (log.startsWith(" [source]")) styleClass = "text-zinc-500 hover:text-zinc-300 truncate transition-colors";
+                                      else if (log.startsWith("[success]")) styleClass = "text-emerald-500 font-bold bg-emerald-950/20 px-2 py-0.5 rounded border border-emerald-900/20";
+                                      else if (log.startsWith("[error]")) styleClass = "text-red-400 font-black bg-red-950/20 px-2 py-1 rounded border border-red-900/20";
+
+                                      return (
+                                        <div key={idx} className={`${styleClass} break-all`}>
+                                          {log}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
                           </div>
                         )}
                       </>

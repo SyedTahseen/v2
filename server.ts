@@ -736,7 +736,9 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
-async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string }> {
+async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
+  const debugLogs: string[] = [];
+  debugLogs.push(`[info] Auto-search triggered for episode title: "${episodeTitle}"`);
   try {
     const ai = getGemini();
     const prompt = `Perform a web search to find the correct, official listen or watch URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik).
@@ -756,8 +758,8 @@ Spotify: [url]
 Apple: [url]
 YouTube: [url]`;
 
-    // Note: Do NOT use responseMimeType: "application/json" under config when using googleSearch tool,
-    // as structured schema outputs are not compatible with search tools.
+    debugLogs.push(`[info] Initializing Gemini model gemini-3.5-flash with Google Search Grounding to scan real-time web index...`);
+
     const modelResponse = await ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: prompt,
@@ -767,7 +769,25 @@ YouTube: [url]`;
     });
 
     const outputText = modelResponse.text || "";
-    console.log(`[searchPlatformLinks] Gemini search response text:`, outputText);
+    debugLogs.push(`[info] Search completed. Parsing raw textual findings...`);
+    debugLogs.push(`[raw_response] ${outputText}`);
+
+    const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
+    if (metadata) {
+      if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
+        debugLogs.push(`[grounding_queries] Executed search queries: ${JSON.stringify(metadata.webSearchQueries)}`);
+      }
+      if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
+        debugLogs.push(`[grounding_chunks] Scanning ${metadata.groundingChunks.length} web grounding chunks...`);
+        metadata.groundingChunks.forEach((chunk) => {
+          if (chunk.web?.uri) {
+            debugLogs.push(` [source] "${chunk.web.title || 'Untitled'}" -> ${chunk.web.uri}`);
+          }
+        });
+      }
+    } else {
+      debugLogs.push(`[warning] No grounding metadata retrieved. The Google Search grounder did not yield search history objects.`);
+    }
 
     let spotifyUrl = "";
     let applePodcastsUrl = "";
@@ -776,55 +796,86 @@ YouTube: [url]`;
     // Parse all URLs from the output text in a highly robust way
     const urlRegex = /(https?:\/\/[^\s\)\}\]\"\'>]+)/gi;
     const foundUrls = outputText.match(urlRegex) || [];
+    debugLogs.push(`[info] Scanning ${foundUrls.length} extracted raw URLs for service matches...`);
+
     for (const rawUrl of foundUrls) {
-      // Clean up punctuation or markup endings (like brackets or periods)
       const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
       if (!spotifyUrl && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/") || cleanUrl.includes("/show/"))) {
         spotifyUrl = cleanUrl;
+        debugLogs.push(`[success] Matched Spotify link from text parsing: ${cleanUrl}`);
       } else if (!applePodcastsUrl && cleanUrl.includes("podcasts.apple.com")) {
         applePodcastsUrl = cleanUrl;
+        debugLogs.push(`[success] Matched Apple Podcasts link from text parsing: ${cleanUrl}`);
       } else if (!youtubeUrl && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
         youtubeUrl = cleanUrl;
+        debugLogs.push(`[success] Matched YouTube link from text parsing: ${cleanUrl}`);
       }
     }
 
-    // Fallback: If any link is missing, check groundingMetadata chunks from Google Search Grounding
-    const chunks = modelResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    // Fallback search in grounding chunks (meta source URIs)
+    const chunks = metadata?.groundingChunks;
     if (chunks && Array.isArray(chunks)) {
+      debugLogs.push(`[info] Performing secondary scanning of grounding chunks for platform patterns...`);
       for (const chunk of chunks) {
         const uri = chunk.web?.uri;
         if (uri && typeof uri === "string") {
           const cleanUri = uri.trim();
           if (!spotifyUrl && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/") || cleanUri.includes("/show/"))) {
             spotifyUrl = cleanUri;
+            debugLogs.push(`[success] Matched Spotify link from source chunks: ${cleanUri}`);
           } else if (!applePodcastsUrl && cleanUri.includes("podcasts.apple.com")) {
             applePodcastsUrl = cleanUri;
+            debugLogs.push(`[success] Matched Apple Podcasts link from source chunks: ${cleanUri}`);
           } else if (!youtubeUrl && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
             youtubeUrl = cleanUri;
+            debugLogs.push(`[success] Matched YouTube link from source chunks: ${cleanUri}`);
           }
         }
       }
     }
 
-    // Hardcoded safety defaults for Rena Malik Show if even Google Search Grounding is blocked or returns empty
-    if (!spotifyUrl) spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7"; // Real Spotify show ID for The Rena Malik Show
-    if (!applePodcastsUrl) applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253"; // Real Apple podcast link
-    if (!youtubeUrl) youtubeUrl = "https://www.youtube.com/@RenaMalikMD"; // Real YouTube channel handle for Rena Malik MD
+    // Capture fallbacks if empty
+    if (!spotifyUrl) {
+      spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
+      debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
+    }
+    if (!applePodcastsUrl) {
+      applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
+      debugLogs.push(`[warning] Apple Podcasts episode-specific link search failed. Defaulted to show: ${applePodcastsUrl}`);
+    }
+    if (!youtubeUrl) {
+      youtubeUrl = "https://www.youtube.com/@RenaMalikMD";
+      debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
+    }
 
     console.log(`[searchPlatformLinks] Parsed links: Spotify: "${spotifyUrl}", Apple: "${applePodcastsUrl}", YouTube: "${youtubeUrl}"`);
 
     return { 
       spotifyUrl, 
       applePodcastsUrl, 
-      youtubeUrl 
+      youtubeUrl,
+      debugLogs
     };
   } catch (err: any) {
-    console.error(`[searchPlatformLinks] Failed to find links via Gemini search grounding:`, err.message || err);
+    const errorMsg = err.message || JSON.stringify(err);
+    console.error(`[searchPlatformLinks] Failed to find links via Gemini search grounding:`, errorMsg);
+    debugLogs.push(`[error] Gemini Search Grounding crashed: ${errorMsg}`);
   }
+  
+  // Return absolute fallbacks with the recorded error
+  const fallbackSpotify = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
+  const fallbackApple = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
+  const fallbackYoutube = "https://www.youtube.com/@RenaMalikMD";
+  debugLogs.push(`[info] Triggered catch block absolute safety fallback:`);
+  debugLogs.push(`- Spotify: ${fallbackSpotify}`);
+  debugLogs.push(`- Apple: ${fallbackApple}`);
+  debugLogs.push(`- Youtube: ${fallbackYoutube}`);
+
   return { 
-    spotifyUrl: "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7", 
-    applePodcastsUrl: "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253", 
-    youtubeUrl: "https://www.youtube.com/@RenaMalikMD" 
+    spotifyUrl: fallbackSpotify, 
+    applePodcastsUrl: fallbackApple, 
+    youtubeUrl: fallbackYoutube,
+    debugLogs
   };
 }
 
@@ -974,6 +1025,7 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
     let spotifyUrl = "";
     let applePodcastsUrl = "";
     let youtubeUrl = "";
+    let searchDebugLogs: string[] = [];
 
     if (title) {
       try {
@@ -982,9 +1034,11 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
         spotifyUrl = links.spotifyUrl;
         applePodcastsUrl = links.applePodcastsUrl;
         youtubeUrl = links.youtubeUrl;
+        searchDebugLogs = links.debugLogs || [];
         console.log(`[Gemini Integration] Grabbed URLs: Spotify: ${spotifyUrl}, Apple: ${applePodcastsUrl}, YouTube: ${youtubeUrl}`);
       } catch (linkErr: any) {
         console.error("[Gemini Integration] Failed to web search platform links:", linkErr);
+        searchDebugLogs = [`[error] Secondary search failed in main metadata extraction: ${linkErr.message || linkErr}`];
       }
     }
 
@@ -1055,7 +1109,8 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
       transcript: finalTranscript,
       spotifyUrl,
       applePodcastsUrl,
-      youtubeUrl
+      youtubeUrl,
+      searchDebugLogs
     });
 
   } catch (error: any) {
