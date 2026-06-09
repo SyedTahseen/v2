@@ -736,28 +736,53 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
-function isTitleMatch(originalTitle: string, foundTitle: string): boolean {
-  const cleanWords = (text: string) => {
-    return text
+function isTitleMatch(originalTitle: string, foundTitle: string, debugLogs?: string[]): boolean {
+  if (!originalTitle || !foundTitle) return false;
+
+  const getCleanWords = (text: string) => {
+    // Standardize to lowercase and replace non-alphanumeric chars with spaces
+    const cleaned = text
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter(w => w.length > 2 && !["the", "and", "for", "with", "from", "you", "your", "that", "this", "moment", "show", "rena", "malik", "episode", "podcast", "channel"].includes(w));
+      .trim()
+      .replace(/[^a-z0-9\s]/g, " ");
+    
+    // Split by whitespace
+    const words = cleaned.split(/\s+/).filter(Boolean);
+
+    // List of common filler/stop words to ignore for strict matching
+    const stopWords = new Set([
+      "the", "and", "for", "with", "from", "you", "your", "that", "this", 
+      "moment", "show", "rena", "malik", "episode", "podcast", "channel",
+      "some", "even", "never", "ever", "highly", "fully", "how", "why", 
+      "who", "what", "are", "was", "were", "has", "have", "had", "out",
+      "our", "not", "but", "can", "their", "them", "then", "into", "onto",
+      "its", "about", "could", "would", "should"
+    ]);
+
+    // Keep unique words longer than 2 characters that are not stop words
+    return Array.from(new Set(words.filter(w => w.length > 2 && !stopWords.has(w))));
   };
-  const origWords = cleanWords(originalTitle);
-  const foundWords = cleanWords(foundTitle);
-  if (origWords.length === 0) return true; // fallback if no significant words in original
-  
-  let matches = 0;
-  for (const word of origWords) {
-    if (foundWords.includes(word)) {
-      matches++;
-    }
+
+  const origWords = getCleanWords(originalTitle);
+  const foundWords = getCleanWords(foundTitle);
+
+  if (origWords.length === 0) {
+    if (debugLogs) debugLogs.push(`  [Title Match] Warning: No key words extracted from original title "${originalTitle}". Fallback to false.`);
+    return false;
   }
-  
-  // We want at least 2 matching significant words or 30% of the original significant words
-  const threshold = Math.min(2, Math.ceil(origWords.length * 0.3));
-  return matches >= threshold;
+
+  const matchingWords = origWords.filter(w => foundWords.includes(w));
+  const matchRatio = matchingWords.length / origWords.length;
+  // We want a high-confidence match of at least 40% of the significant words
+  const isMatch = matchRatio >= 0.40;
+
+  if (debugLogs) {
+    debugLogs.push(`  [Title Match] Math Check: ${(matchRatio * 100).toFixed(0)}% (${matchingWords.length}/${origWords.length} words matched) -> ${isMatch ? "PASS" : "REJECT"}`);
+    debugLogs.push(`    Original Key Words: [${origWords.join(", ")}]`);
+    debugLogs.push(`    Candidate Key Words: [${foundWords.join(", ")}]`);
+  }
+
+  return isMatch;
 }
 
 async function fetchDeliriusYt(query: string, apiBase: string, debugLogs: string[]): Promise<any[]> {
@@ -825,7 +850,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
           debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from official API...`);
           for (const item of data.items) {
             const videoTitle = item.snippet?.title || "";
-            const isMatch = isTitleMatch(episodeTitle, videoTitle);
+            const isMatch = isTitleMatch(episodeTitle, videoTitle, debugLogs);
             debugLogs.push(` [YouTube Official Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
             if (isMatch) {
               const videoId = item.id?.videoId;
@@ -854,7 +879,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
       debugLogs.push(`[info] [YouTube] Scanning ${ytItems.length} candidate results from Delirius API...`);
       for (const item of ytItems) {
         const videoTitle = item.title || "";
-        const isMatch = isTitleMatch(episodeTitle, videoTitle);
+        const isMatch = isTitleMatch(episodeTitle, videoTitle, debugLogs);
         debugLogs.push(` [YouTube Delirius Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
         if (isMatch) {
           const rawUrl = item.url || (item.videoId ? `https://www.youtube.com/watch?v=${item.videoId}` : "");
@@ -878,7 +903,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
       for (const item of googleItems) {
         const itemTitle = item.title || "";
         const itemUrl = item.url || "";
-        const isMatch = isTitleMatch(episodeTitle, itemTitle);
+        const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
         debugLogs.push(` [YouTube Google Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
         if (isMatch && (itemUrl.includes("youtube.com") || itemUrl.includes("youtu.be"))) {
           youtubeUrl = itemUrl;
@@ -898,7 +923,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
     for (const item of spotifyItems) {
       const itemTitle = item.title || "";
       const itemUrl = item.url || "";
-      const isMatch = isTitleMatch(episodeTitle, itemTitle);
+      const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
       debugLogs.push(` [Spotify Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
       if (itemUrl.includes("spotify.com") && (itemUrl.includes("/episode/") || itemUrl.includes("/track/"))) {
         if (isMatch) {
@@ -919,7 +944,7 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
     for (const item of appleItems) {
       const itemTitle = item.title || "";
       const itemUrl = item.url || "";
-      const isMatch = isTitleMatch(episodeTitle, itemTitle);
+      const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
       debugLogs.push(` [Apple Podcast Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
       if (itemUrl.includes("podcasts.apple.com") && (itemUrl.includes("/podcast/") || itemUrl.includes("/id"))) {
         const isMainShow = itemUrl.endsWith("/id1552319253") || itemUrl.endsWith("/id1552319253/");
