@@ -741,41 +741,71 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
     const ai = getGemini();
     const prompt = `Perform a web search to find the correct, official listen or watch URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik).
 Please find the following three specific links:
-1. Spotify episode link (should be open.spotify.com/episode/...)
-2. Apple Podcasts episode link (should be podcasts.apple.com/us/podcast/...)
-3. YouTube video watch link for this episode (should be youtube.com/watch?v=...)
+1. Spotify episode link (should contain "open.spotify.com/episode/")
+2. Apple Podcasts episode link (should contain "podcasts.apple.com/")
+3. YouTube video watch link for this episode (should contain "youtube.com/watch?v=" or "youtu.be/")
 
-If a link cannot be found, set it to an empty string. Do not invent fake, mock, or placeholder URLs; only provide real URLs. If you find multiple matches, select the most relevant one.
+If a link cannot be found, omit it or output nothing for it. Do not invent fake, mock, or placeholder URLs; only provide real URLs.
+Write the links clearly as:
+Spotify: [url]
+Apple: [url]
+YouTube: [url]`;
 
-Return the details strictly in the specified JSON format.`;
-
+    // Note: Do NOT use responseMimeType: "application/json" under config when using googleSearch tool,
+    // as structured schema outputs are not compatible with search tools.
     const modelResponse = await ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: prompt,
       config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            spotifyUrl: { type: Type.STRING, description: "Direct Spotify episode link (open.spotify.com/episode/...)" },
-            applePodcastsUrl: { type: Type.STRING, description: "Direct Apple Podcasts episode link (podcasts.apple.com/us/podcast/...)" },
-            youtubeUrl: { type: Type.STRING, description: "Direct YouTube video watch link (youtube.com/watch?v=...)" }
-          },
-          required: ["spotifyUrl", "applePodcastsUrl", "youtubeUrl"]
-        }
+        tools: [{ googleSearch: {} }]
       }
     });
 
-    const outputText = modelResponse.text;
-    if (outputText) {
-      const parsed = JSON.parse(outputText.trim());
-      return {
-        spotifyUrl: typeof parsed.spotifyUrl === 'string' ? parsed.spotifyUrl : "",
-        applePodcastsUrl: typeof parsed.applePodcastsUrl === 'string' ? parsed.applePodcastsUrl : "",
-        youtubeUrl: typeof parsed.youtubeUrl === 'string' ? parsed.youtubeUrl : ""
-      };
+    const outputText = modelResponse.text || "";
+    console.log(`[searchPlatformLinks] Gemini search response text:`, outputText);
+
+    let spotifyUrl = "";
+    let applePodcastsUrl = "";
+    let youtubeUrl = "";
+
+    // Parse the URLs from the response text using regex
+    const spotifyRegex = /(https?:\/\/(?:open|play)\.spotify\.com\/episode\/[ a-zA-Z0-9_\-\?=&%\+]+)/i;
+    const appleRegex = /(https?:\/\/podcasts\.apple\.com\/[ a-zA-Z0-9_\-\/\?=&%\+]+)/i;
+    const youtubeRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)[ a-zA-Z0-9_\-\?=&%\+]+)/i;
+
+    const spotifyMatch = outputText.match(spotifyRegex);
+    if (spotifyMatch) spotifyUrl = spotifyMatch[1].trim();
+
+    const appleMatch = outputText.match(appleRegex);
+    if (appleMatch) applePodcastsUrl = appleMatch[1].trim();
+
+    const youtubeMatch = outputText.match(youtubeRegex);
+    if (youtubeMatch) youtubeUrl = youtubeMatch[1].trim();
+
+    // Fallback: If any link is missing, check groundingMetadata chunks
+    const chunks = modelResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
+    if (chunks && Array.isArray(chunks)) {
+      for (const chunk of chunks) {
+        const uri = chunk.web?.uri;
+        if (uri && typeof uri === "string") {
+          if (!spotifyUrl && /spotify\.com/i.test(uri)) {
+            spotifyUrl = uri.trim();
+          } else if (!applePodcastsUrl && /podcasts\.apple\.com/i.test(uri)) {
+            applePodcastsUrl = uri.trim();
+          } else if (!youtubeUrl && /(youtube\.com|youtu\.be)/i.test(uri)) {
+            youtubeUrl = uri.trim();
+          }
+        }
+      }
     }
+
+    console.log(`[searchPlatformLinks] Parsed links: Spotify: "${spotifyUrl}", Apple: "${applePodcastsUrl}", YouTube: "${youtubeUrl}"`);
+
+    return { 
+      spotifyUrl: spotifyUrl || "", 
+      applePodcastsUrl: applePodcastsUrl || "", 
+      youtubeUrl: youtubeUrl || "" 
+    };
   } catch (err: any) {
     console.error(`[searchPlatformLinks] Failed to find links via Gemini search grounding:`, err.message || err);
   }
