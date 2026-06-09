@@ -367,6 +367,9 @@ interface IEpisodeMeta {
   episodeId: string;
   timestamps: Array<{ time: string; label: string }>;
   transcript: string;
+  spotifyUrl?: string;
+  applePodcastsUrl?: string;
+  youtubeUrl?: string;
   updatedAt: Date;
 }
 
@@ -382,6 +385,9 @@ function getEpisodeMetaModel() {
       label: { type: String, required: true }
     }],
     transcript: { type: String, default: "" },
+    spotifyUrl: { type: String, default: "" },
+    applePodcastsUrl: { type: String, default: "" },
+    youtubeUrl: { type: String, default: "" },
     updatedAt: { type: Date, default: Date.now }
   });
   return mongoose.model<IEpisodeMeta>("EpisodeMeta", schema);
@@ -411,7 +417,10 @@ async function getEpisodeMetaMap(): Promise<Record<string, any>> {
       allDocs.forEach(doc => {
         metaMap[doc.episodeId] = {
           timestamps: doc.timestamps,
-          transcript: doc.transcript
+          transcript: doc.transcript,
+          spotifyUrl: doc.spotifyUrl || "",
+          applePodcastsUrl: doc.applePodcastsUrl || "",
+          youtubeUrl: doc.youtubeUrl || ""
         };
       });
       console.log(`[MongoDB] Pulled fresh metadata entries from database. (Count: ${allDocs.length})`);
@@ -619,7 +628,7 @@ app.get("/api/episode-meta/:id", async (req, res) => {
         }
       }
     }
-    res.json(meta || { timestamps: [], transcript: "" });
+    res.json(meta || { timestamps: [], transcript: "", spotifyUrl: "", applePodcastsUrl: "", youtubeUrl: "" });
   } catch (err: any) {
     console.error(`[API] Failed to find episode-meta for ${episodeId}:`, err.message || err);
     const keys = getAlternativeKeys(episodeId);
@@ -630,7 +639,7 @@ app.get("/api/episode-meta/:id", async (req, res) => {
         break;
       }
     }
-    res.json(meta || { timestamps: [], transcript: "" });
+    res.json(meta || { timestamps: [], transcript: "", spotifyUrl: "", applePodcastsUrl: "", youtubeUrl: "" });
   }
 });
 
@@ -642,9 +651,12 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   }
 
   const episodeId = req.params.id;
-  const { timestamps, transcript } = req.body || {};
+  const { timestamps, transcript, spotifyUrl, applePodcastsUrl, youtubeUrl } = req.body || {};
   const validTimestamps = Array.isArray(timestamps) ? timestamps : [];
   const validTranscript = typeof transcript === "string" ? transcript : "";
+  const validSpotify = typeof spotifyUrl === "string" ? spotifyUrl : "";
+  const validApple = typeof applePodcastsUrl === "string" ? applePodcastsUrl : "";
+  const validYoutube = typeof youtubeUrl === "string" ? youtubeUrl : "";
 
   // Lazy database connection checking only when updating
   try {
@@ -662,6 +674,9 @@ app.post("/api/episode-meta/:id", async (req, res) => {
         { 
           timestamps: validTimestamps, 
           transcript: validTranscript,
+          spotifyUrl: validSpotify,
+          applePodcastsUrl: validApple,
+          youtubeUrl: validYoutube,
           updatedAt: new Date()
         },
         { upsert: true }
@@ -682,7 +697,10 @@ app.post("/api/episode-meta/:id", async (req, res) => {
     keys.forEach((key) => {
       initialCache[key] = {
         timestamps: validTimestamps,
-        transcript: validTranscript
+        transcript: validTranscript,
+        spotifyUrl: validSpotify,
+        applePodcastsUrl: validApple,
+        youtubeUrl: validYoutube
       };
     });
     cachedEpisodeMeta = {
@@ -693,17 +711,94 @@ app.post("/api/episode-meta/:id", async (req, res) => {
     keys.forEach((key) => {
       cachedEpisodeMeta!.data[key] = {
         timestamps: validTimestamps,
-        transcript: validTranscript
+        transcript: validTranscript,
+        spotifyUrl: validSpotify,
+        applePodcastsUrl: validApple,
+        youtubeUrl: validYoutube
       };
     });
     cachedEpisodeMeta.timestamp = Date.now(); // bump expiry
   }
 
+  // Clear episode list cache to ensure fresh metadata is merged on next fetch
+  cachedEpisodes = null;
+
   res.json({ 
     success: true, 
     message: "Metadata updated in MongoDB database and local memory cache successfully", 
-    data: { timestamps: validTimestamps, transcript: validTranscript } 
+    data: { 
+      timestamps: validTimestamps, 
+      transcript: validTranscript, 
+      spotifyUrl: validSpotify, 
+      applePodcastsUrl: validApple, 
+      youtubeUrl: validYoutube 
+    } 
   });
+});
+
+async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string }> {
+  try {
+    const ai = getGemini();
+    const prompt = `Perform a web search to find the correct, official listen or watch URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik).
+Please find the following three specific links:
+1. Spotify episode link (should be open.spotify.com/episode/...)
+2. Apple Podcasts episode link (should be podcasts.apple.com/us/podcast/...)
+3. YouTube video watch link for this episode (should be youtube.com/watch?v=...)
+
+If a link cannot be found, set it to an empty string. Do not invent fake, mock, or placeholder URLs; only provide real URLs. If you find multiple matches, select the most relevant one.
+
+Return the details strictly in the specified JSON format.`;
+
+    const modelResponse = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        tools: [{ googleSearch: {} }],
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            spotifyUrl: { type: Type.STRING, description: "Direct Spotify episode link (open.spotify.com/episode/...)" },
+            applePodcastsUrl: { type: Type.STRING, description: "Direct Apple Podcasts episode link (podcasts.apple.com/us/podcast/...)" },
+            youtubeUrl: { type: Type.STRING, description: "Direct YouTube video watch link (youtube.com/watch?v=...)" }
+          },
+          required: ["spotifyUrl", "applePodcastsUrl", "youtubeUrl"]
+        }
+      }
+    });
+
+    const outputText = modelResponse.text;
+    if (outputText) {
+      const parsed = JSON.parse(outputText.trim());
+      return {
+        spotifyUrl: typeof parsed.spotifyUrl === 'string' ? parsed.spotifyUrl : "",
+        applePodcastsUrl: typeof parsed.applePodcastsUrl === 'string' ? parsed.applePodcastsUrl : "",
+        youtubeUrl: typeof parsed.youtubeUrl === 'string' ? parsed.youtubeUrl : ""
+      };
+    }
+  } catch (err: any) {
+    console.error(`[searchPlatformLinks] Failed to find links via Gemini search grounding:`, err.message || err);
+  }
+  return { spotifyUrl: "", applePodcastsUrl: "", youtubeUrl: "" };
+}
+
+// POST API to automatically search and retrieve platform links
+app.post("/api/admin/auto-grab-links", async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || authHeader !== `Bearer ${AUTH_TOKEN}`) {
+    return res.status(401).json({ success: false, message: "Unauthorized. Please authenticate first." });
+  }
+  const { title } = req.body || {};
+  if (!title) {
+    return res.status(400).json({ success: false, message: "Missing episode title" });
+  }
+
+  try {
+    const links = await searchPlatformLinks(title);
+    res.json({ success: true, ...links });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || "Failed to search links" });
+  }
 });
 
 // POST API for Admin to trigger Gemini-based metadata generation (Chapters & Transcript)
@@ -713,7 +808,7 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
     return res.status(401).json({ success: false, message: "Unauthorized. Please authenticate first." });
   }
 
-  const { episodeId, audioUrl, prompt: customPrompt } = req.body || {};
+  const { episodeId, audioUrl, prompt: customPrompt, title } = req.body || {};
   if (!episodeId || !audioUrl) {
     return res.status(400).json({ success: false, message: "Missing episodeId or audioUrl" });
   }
@@ -829,6 +924,24 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
     const finalTimestamps = parsedData.timestamps || [];
     const finalTranscript = parsedData.transcript || "";
 
+    // Parallel search for platform links
+    let spotifyUrl = "";
+    let applePodcastsUrl = "";
+    let youtubeUrl = "";
+
+    if (title) {
+      try {
+        console.log(`[Gemini Integration] Triggering web search grounding for platform links under: "${title}"`);
+        const links = await searchPlatformLinks(title);
+        spotifyUrl = links.spotifyUrl;
+        applePodcastsUrl = links.applePodcastsUrl;
+        youtubeUrl = links.youtubeUrl;
+        console.log(`[Gemini Integration] Grabbed URLs: Spotify: ${spotifyUrl}, Apple: ${applePodcastsUrl}, YouTube: ${youtubeUrl}`);
+      } catch (linkErr: any) {
+        console.error("[Gemini Integration] Failed to web search platform links:", linkErr);
+      }
+    }
+
     // Automatically save newly generated data into MongoDB
     try {
       await ensureDbConnected();
@@ -844,6 +957,9 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
           { 
             timestamps: finalTimestamps, 
             transcript: finalTranscript,
+            spotifyUrl,
+            applePodcastsUrl,
+            youtubeUrl,
             updatedAt: new Date()
           },
           { upsert: true }
@@ -861,7 +977,10 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
       keys.forEach((key) => {
         initialCache[key] = {
           timestamps: finalTimestamps,
-          transcript: finalTranscript
+          transcript: finalTranscript,
+          spotifyUrl,
+          applePodcastsUrl,
+          youtubeUrl
         };
       });
       cachedEpisodeMeta = {
@@ -872,16 +991,25 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
       keys.forEach((key) => {
         cachedEpisodeMeta!.data[key] = {
           timestamps: finalTimestamps,
-          transcript: finalTranscript
+          transcript: finalTranscript,
+          spotifyUrl,
+          applePodcastsUrl,
+          youtubeUrl
         };
       });
       cachedEpisodeMeta.timestamp = Date.now();
     }
 
+    // Clear episode list cache to ensure fresh metadata is merged on next fetch
+    cachedEpisodes = null;
+
     res.json({
       success: true,
       timestamps: finalTimestamps,
-      transcript: finalTranscript
+      transcript: finalTranscript,
+      spotifyUrl,
+      applePodcastsUrl,
+      youtubeUrl
     });
 
   } catch (error: any) {
@@ -1143,6 +1271,41 @@ app.get("/api/youtube", async (req, res) => {
   }
 });
 
+const mergeMetaIntoEpisodes = async (rawEpisodes: any[]): Promise<any[]> => {
+  try {
+    const metaMap = await getEpisodeMetaMap();
+    return rawEpisodes.map((ep) => {
+      const keys = getAlternativeKeys(ep.id);
+      let meta = null;
+      for (const key of keys) {
+        if (metaMap[key]) {
+          meta = metaMap[key];
+          break;
+        }
+      }
+      if (!meta) {
+        for (const key of keys) {
+          if (SEED_EPISODE_META[key]) {
+            meta = SEED_EPISODE_META[key];
+            break;
+          }
+        }
+      }
+      return {
+        ...ep,
+        timestamps: meta?.timestamps || [],
+        transcript: meta?.transcript || "",
+        spotifyUrl: meta?.spotifyUrl || "",
+        applePodcastsUrl: meta?.applePodcastsUrl || "",
+        youtubeUrl: meta?.youtubeUrl || ""
+      };
+    });
+  } catch (err) {
+    console.warn("[mergeMeta] Failed to attach meta, serving without timestamps/transcript", err);
+    return rawEpisodes;
+  }
+};
+
 // API Route for Podcasts serving
 app.get("/api/episodes", async (req, res) => {
   const now = Date.now();
@@ -1178,16 +1341,17 @@ app.get("/api/episodes", async (req, res) => {
   };
 
   try {
-    const freshEpisodes = await fetchAndParseRSS();
+    const rawEpisodes = await fetchAndParseRSS();
+    const mergedEpisodes = await mergeMetaIntoEpisodes(rawEpisodes);
     
     // Save to local node-process cache
     cachedEpisodes = {
-      data: freshEpisodes,
+      data: mergedEpisodes,
       timestamp: now
     };
 
-    console.log(`[API] RSS fetch and parse successful. Refreshed direct memory cache.`);
-    return res.json(freshEpisodes);
+    console.log(`[API] RSS fetch and parse successful with merged meta. Refreshed direct memory cache.`);
+    return res.json(mergedEpisodes);
   } catch (error: any) {
     console.error("[API] MegaPhone RSS downloader failed, checking memory cache fallback:", error.message || error);
     
@@ -1197,8 +1361,9 @@ app.get("/api/episodes", async (req, res) => {
       return res.json(cachedEpisodes.data);
     }
 
-    console.log("[API] Defaulting to medical offline layout fallbacks.");
-    return res.json(FALLBACK_EPISODES);
+    console.log("[API] Defaulting to medical offline layout fallbacks with merged meta.");
+    const mergedFallback = await mergeMetaIntoEpisodes(FALLBACK_EPISODES);
+    return res.json(mergedFallback);
   }
 });
 

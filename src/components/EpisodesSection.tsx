@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { 
   Search, Play, Pause, Volume2, Clock, Calendar, ArrowRight, Music, 
   Sparkles, X, ExternalLink, Copy, Check, Info, ChevronRight, Activity, 
-  ChevronLeft, MoreHorizontal, FileText
+  ChevronLeft, MoreHorizontal, FileText, Radio, Podcast
 } from "lucide-react";
 import { podcastEpisodes, Episode } from "../types";
 
@@ -49,8 +49,14 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
   const [selectedDetailEpisode, setSelectedDetailEpisode] = useState<Episode | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Custom metadata (timestamps, transcription text)
-  const [episodeMeta, setEpisodeMeta] = useState<{ timestamps: Array<{ time: string; label: string }>; transcript: string }>({ timestamps: [], transcript: "" });
+  // Custom metadata (timestamps, transcription text, platform URLs)
+  const [episodeMeta, setEpisodeMeta] = useState<{ 
+    timestamps: Array<{ time: string; label: string }>; 
+    transcript: string;
+    spotifyUrl?: string;
+    applePodcastsUrl?: string;
+    youtubeUrl?: string;
+  }>({ timestamps: [], transcript: "", spotifyUrl: "", applePodcastsUrl: "", youtubeUrl: "" });
   const [isLoadingMeta, setIsLoadingMeta] = useState(false);
   const [detailTab, setDetailTab] = useState<"notes" | "timestamps" | "transcript">("notes");
 
@@ -98,22 +104,30 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
     }
   }, [selectedDetailEpisode, episodes]);
 
-  const fetchEpisodeMeta = (episodeId: string) => {
-    setIsLoadingMeta(true);
+  const fetchEpisodeMeta = (episodeId: string, backgroundOnly: boolean = false) => {
+    if (!backgroundOnly) {
+      setIsLoadingMeta(true);
+    }
     fetch(`/api/episode-meta/${episodeId}`)
       .then((res) => {
         if (!res.ok) throw new Error();
         return res.json();
       })
       .then((data) => {
-        setEpisodeMeta(data || { timestamps: [], transcript: "" });
+        if (data) {
+          setEpisodeMeta(data);
+        }
       })
       .catch((err) => {
-        console.warn("[EpisodeMeta] Fallback clear loading error", err);
-        setEpisodeMeta({ timestamps: [], transcript: "" });
+        console.warn("[EpisodeMeta] Fallback clear/loading error", err);
+        if (!backgroundOnly) {
+          setEpisodeMeta({ timestamps: [], transcript: "", spotifyUrl: "", applePodcastsUrl: "", youtubeUrl: "" });
+        }
       })
       .finally(() => {
-        setIsLoadingMeta(false);
+        if (!backgroundOnly) {
+          setIsLoadingMeta(false);
+        }
       });
   };
 
@@ -121,7 +135,13 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
   useEffect(() => {
     if (selectedDetailEpisode) {
       setDetailTab("notes"); // Reset visual tabs
-      fetchEpisodeMeta(selectedDetailEpisode.id);
+      // Immediately hydrate with pre-merged metadata to provide zero-latency rendering
+      setEpisodeMeta({
+        timestamps: selectedDetailEpisode.timestamps || [],
+        transcript: selectedDetailEpisode.transcript || ""
+      });
+      // Gently fetch fresh metadata in the background
+      fetchEpisodeMeta(selectedDetailEpisode.id, true);
     } else {
       setEpisodeMeta({ timestamps: [], transcript: "" });
     }
@@ -132,7 +152,7 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
     const handleAdminMetaUpdated = () => {
       if (selectedDetailEpisode) {
         console.log("[EpisodesSection] Refreshing episode details following admin save action.");
-        fetchEpisodeMeta(selectedDetailEpisode.id);
+        fetchEpisodeMeta(selectedDetailEpisode.id, false);
       }
     };
     window.addEventListener("episode-meta-updated", handleAdminMetaUpdated);
@@ -429,6 +449,60 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
                         <span className="text-xs text-zinc-400 font-normal">{selectedDetailEpisode.guestTitle}</span>
                       </div>
                     </div>
+
+                    {/* Platform Listen Links */}
+                    {(episodeMeta?.spotifyUrl || episodeMeta?.applePodcastsUrl || episodeMeta?.youtubeUrl) && (
+                      <div className="flex flex-col gap-2 mt-2">
+                        <span className="text-[10px] text-zinc-500 tracking-widest uppercase font-black">Listen / Watch on Platforms</span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {episodeMeta?.spotifyUrl && (
+                            <a
+                              href={episodeMeta.spotifyUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3.5 py-1.5 bg-card-pill border border-zinc-700/50 hover:border-zinc-500 rounded-full flex items-center gap-2 transition-all duration-300 hover:bg-card-pill/90 hover:scale-[1.03] active:scale-[0.97] group cursor-pointer mr-0.5"
+                            >
+                              <div className="w-5 h-5 rounded-full bg-[#1DB954] flex items-center justify-center shrink-0">
+                                <Radio size={10} className="text-black" />
+                              </div>
+                              <span className="text-[10px] sm:text-[11px] font-semibold tracking-wide text-zinc-300 group-hover:text-white transition-colors">
+                                Spotify
+                              </span>
+                            </a>
+                          )}
+                          {episodeMeta?.applePodcastsUrl && (
+                            <a
+                              href={episodeMeta.applePodcastsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3.5 py-1.5 bg-card-pill border border-zinc-700/50 hover:border-zinc-500 rounded-full flex items-center gap-2 transition-all duration-300 hover:bg-card-pill/90 hover:scale-[1.03] active:scale-[0.97] group cursor-pointer mr-0.5"
+                            >
+                              <div className="w-5 h-5 rounded bg-[#9C33EC] flex items-center justify-center shrink-0">
+                                <Podcast size={10} className="text-white" />
+                              </div>
+                              <span className="text-[10px] sm:text-[11px] font-semibold tracking-wide text-zinc-300 group-hover:text-white transition-colors">
+                                Apple Podcasts
+                              </span>
+                            </a>
+                          )}
+                          {episodeMeta?.youtubeUrl && (
+                            <a
+                              href={episodeMeta.youtubeUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3.5 py-1.5 bg-card-pill border border-zinc-700/50 hover:border-zinc-500 rounded-full flex items-center gap-2 transition-all duration-300 hover:bg-card-pill/90 hover:scale-[1.03] active:scale-[0.97] group cursor-pointer"
+                            >
+                              <div className="w-5 h-5 rounded bg-[#FF0000] flex items-center justify-center shrink-0">
+                                <Play size={8} className="text-white fill-white translate-x-[0.5px]" />
+                              </div>
+                              <span className="text-[10px] sm:text-[11px] font-semibold tracking-wide text-zinc-300 group-hover:text-white transition-colors">
+                                YouTube
+                              </span>
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
 
@@ -580,7 +654,7 @@ export default function EpisodesSection({ onDetailStateChange, currentPath }: Ep
                             <span>Loading Transcript text...</span>
                           </div>
                         ) : episodeMeta.transcript ? (
-                          <div className="flex flex-col gap-4 max-h-[500px] overflow-y-auto pr-1">
+                          <div className="flex flex-col gap-4 pr-1">
                             {episodeMeta.transcript.split("\n").map((line, index) => {
                               if (!line.trim()) return <div key={index} className="h-2" />;
 

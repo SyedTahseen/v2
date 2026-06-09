@@ -16,6 +16,11 @@ export interface Episode {
   audioUrl: string;
   youtubeId?: string;
   tags: string[];
+  timestamps?: Array<{ time: string; label: string }>;
+  transcript?: string;
+  spotifyUrl?: string;
+  applePodcastsUrl?: string;
+  youtubeUrl?: string;
 }
 
 export interface PodcastCategory {

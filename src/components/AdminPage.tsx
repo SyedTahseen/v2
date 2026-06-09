@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Shield, Save, Plus, Trash2, CheckCircle, AlertCircle, 
@@ -90,7 +90,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
 
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [isExpanded, setIsExpanded] = useState(false);
-  const [detailTab, setDetailTab] = useState<"notes" | "timestamps" | "transcript">("notes");
+  const [detailTab, setDetailTab] = useState<"notes" | "timestamps" | "transcript" | "links">("notes");
 
   // Audio Player State
   const [activeEpisode, setActiveEpisode] = useState<Episode | null>(null);
@@ -104,13 +104,19 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
   // Form State
   const [timestamps, setTimestamps] = useState<TimestampRow[]>([]);
   const [transcript, setTranscript] = useState<string>("");
+  const [spotifyUrl, setSpotifyUrl] = useState<string>("");
+  const [applePodcastsUrl, setApplePodcastsUrl] = useState<string>("");
+  const [youtubeUrl, setYoutubeUrl] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
   const [isLoadingMeta, setIsLoadingMeta] = useState(false);
   const [isEditingTimestamps, setIsEditingTimestamps] = useState(false);
   const [isEditingTranscript, setIsEditingTranscript] = useState(false);
+  const [isEditingLinks, setIsEditingLinks] = useState(false);
   const [showConfirmDeleteTimestamps, setShowConfirmDeleteTimestamps] = useState(false);
   const [showConfirmDeleteTranscript, setShowConfirmDeleteTranscript] = useState(false);
+  const [showConfirmDeleteLinks, setShowConfirmDeleteLinks] = useState(false);
+  const [revealEditTabId, setRevealEditTabId] = useState<string | null>(null);
 
   // Gemini AI Integration States
   const [isGeneratingGemini, setIsGeneratingGemini] = useState(false);
@@ -269,7 +275,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
           body: JSON.stringify({
             episodeId: ep.id,
             audioUrl: ep.audioUrl,
-            prompt: customPrompt
+            prompt: customPrompt,
+            title: ep.title
           })
         });
 
@@ -392,12 +399,21 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
         .then((data) => {
           const loadedTimestamps = Array.isArray(data?.timestamps) ? data.timestamps : [];
           const loadedTranscript = typeof data?.transcript === "string" ? data.transcript : "";
+          const loadedSpotify = typeof data?.spotifyUrl === "string" ? data.spotifyUrl : "";
+          const loadedApple = typeof data?.applePodcastsUrl === "string" ? data.applePodcastsUrl : "";
+          const loadedYoutube = typeof data?.youtubeUrl === "string" ? data.youtubeUrl : "";
           setTimestamps(loadedTimestamps);
           setTranscript(loadedTranscript);
+          setSpotifyUrl(loadedSpotify);
+          setApplePodcastsUrl(loadedApple);
+          setYoutubeUrl(loadedYoutube);
         })
         .catch(() => {
           setTimestamps([]);
           setTranscript("");
+          setSpotifyUrl("");
+          setApplePodcastsUrl("");
+          setYoutubeUrl("");
         })
         .finally(() => {
           setIsLoadingMeta(false);
@@ -411,8 +427,11 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setDetailTab("notes");
       setIsEditingTimestamps(false);
       setIsEditingTranscript(false);
+      setIsEditingLinks(false);
       setShowConfirmDeleteTimestamps(false);
       setShowConfirmDeleteTranscript(false);
+      setShowConfirmDeleteLinks(false);
+      setRevealEditTabId(null);
     }
   }, [selectedEpisodeId]);
 
@@ -420,12 +439,75 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
   useEffect(() => {
     setShowConfirmDeleteTimestamps(false);
     setShowConfirmDeleteTranscript(false);
+    setShowConfirmDeleteLinks(false);
   }, [detailTab]);
 
   // Reset list expansion state when filters shift
   useEffect(() => {
     setIsExpanded(false);
   }, [selectedCategory, searchQuery]);
+
+  // Tab long press mechanism
+  const longPressTimeoutRef = useRef<any>(null);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const isLongPressActive = useRef(false);
+
+  const handleTabPressStart = (e: React.MouseEvent | React.TouchEvent, tabId: string) => {
+    // Detect starting coordinates to prevent accidental triggers while scrolling
+    if ("touches" in e && e.touches.length > 0) {
+      const touch = e.touches[0];
+      touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+    } else {
+      touchStartPosRef.current = null;
+    }
+
+    isLongPressActive.current = false;
+    if (longPressTimeoutRef.current) clearTimeout(longPressTimeoutRef.current);
+
+    longPressTimeoutRef.current = setTimeout(() => {
+      isLongPressActive.current = true;
+      setRevealEditTabId(tabId);
+      
+      // Gentle haptic feedback on supported device browsers
+      if (typeof navigator !== "undefined" && navigator.vibrate) {
+        navigator.vibrate(40);
+      }
+      // Immediately clear other selections that could interfere with text
+      if (typeof window !== "undefined" && window.getSelection) {
+        window.getSelection()?.removeAllRanges();
+      }
+    }, 450); // Shorter duration feels much cleaner and snappy
+  };
+
+  const handleTabPressEnd = (e: React.MouseEvent | React.TouchEvent, tabId: string) => {
+    if (longPressTimeoutRef.current) {
+      clearTimeout(longPressTimeoutRef.current);
+    }
+
+    // Cancel interaction if user dragged finger too far
+    if ("changedTouches" in e && e.changedTouches.length > 0 && touchStartPosRef.current) {
+      const touch = e.changedTouches[0];
+      const dx = touch.clientX - touchStartPosRef.current.x;
+      const dy = touch.clientY - touchStartPosRef.current.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance > 15) {
+        isLongPressActive.current = false;
+        return;
+      }
+    }
+
+    if (!isLongPressActive.current) {
+      // Direct standard click to transition screen focus
+      setDetailTab(tabId as any);
+      setRevealEditTabId(null);
+    }
+  };
+
+  const handleTabPressCancel = () => {
+    if (longPressTimeoutRef.current) {
+      clearTimeout(longPressTimeoutRef.current);
+    }
+  };
 
   // Direct Seek Helper
   const seekToTime = (seconds: number) => {
@@ -603,7 +685,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
         body: JSON.stringify({
           episodeId: selectedEpisode.id,
           audioUrl: selectedEpisode.audioUrl,
-          prompt: customPrompt
+          prompt: customPrompt,
+          title: selectedEpisode.title
         })
       });
 
@@ -617,6 +700,9 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setGeminiStep("Success! Synchronizing metadata panels...");
       setTimestamps(result.timestamps || []);
       setTranscript(result.transcript || "");
+      setSpotifyUrl(result.spotifyUrl || "");
+      setApplePodcastsUrl(result.applePodcastsUrl || "");
+      setYoutubeUrl(result.youtubeUrl || "");
       setGeminiSuccess(true);
       
       // Auto-switch to chapters/timestamps view
@@ -652,7 +738,10 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
         },
         body: JSON.stringify({
           timestamps: validTimestamps,
-          transcript
+          transcript,
+          spotifyUrl,
+          applePodcastsUrl,
+          youtubeUrl
         })
       });
 
@@ -663,6 +752,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setSaveStatus("success");
       setIsEditingTimestamps(false);
       setIsEditingTranscript(false);
+      setIsEditingLinks(false);
       
       // Dispatch a custom event to notify update
       const event = new CustomEvent("episode-meta-updated");
@@ -694,7 +784,10 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
         },
         body: JSON.stringify({
           timestamps: [],
-          transcript
+          transcript,
+          spotifyUrl,
+          applePodcastsUrl,
+          youtubeUrl
         })
       });
 
@@ -736,7 +829,10 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
         },
         body: JSON.stringify({
           timestamps,
-          transcript: ""
+          transcript: "",
+          spotifyUrl,
+          applePodcastsUrl,
+          youtubeUrl
         })
       });
 
@@ -748,6 +844,53 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
       setSaveStatus("success");
       setIsEditingTranscript(false);
       setShowConfirmDeleteTranscript(false);
+
+      const event = new CustomEvent("episode-meta-updated");
+      window.dispatchEvent(event);
+
+      setTimeout(() => {
+        setSaveStatus("idle");
+      }, 3000);
+    } catch (err) {
+      setSaveStatus("error");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Delete Platform Links handler
+  const handleDeleteLinks = async () => {
+    if (!selectedEpisodeId || !authToken) return;
+
+    setIsSaving(true);
+    setSaveStatus("idle");
+
+    try {
+      const response = await fetch(`/api/episode-meta/${selectedEpisodeId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          timestamps,
+          transcript,
+          spotifyUrl: "",
+          applePodcastsUrl: "",
+          youtubeUrl: ""
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error();
+      }
+
+      setSpotifyUrl("");
+      setApplePodcastsUrl("");
+      setYoutubeUrl("");
+      setSaveStatus("success");
+      setIsEditingLinks(false);
+      setShowConfirmDeleteLinks(false);
 
       const event = new CustomEvent("episode-meta-updated");
       window.dispatchEvent(event);
@@ -1553,7 +1696,6 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                           <span className="text-[10px] text-[#9DAAF2] font-black tracking-widest bg-[#9DAAF2]/10 border border-[#9DAAF2]/20 px-2.5 py-0.5 rounded-md hover:bg-[#9DAAF2]/15 transition-colors uppercase">
                             {geminiModel} ▾
                           </span>
-                          <span className="text-[10px] text-zinc-500 font-medium">attached</span>
                         </div>
                       </div>
 
@@ -1568,7 +1710,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                       />
 
                       {/* Action buttons footer inside the container matching screenshot layout */}
-                      <div className="flex items-center justify-between border-t border-zinc-850/50 pt-3 mt-auto">
+                      <div className="flex items-center justify-between pt-1 mt-auto">
                         <div className="flex items-center gap-2">
                           {selectedEpisode.audioUrl && (
                             <div 
@@ -1634,7 +1776,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
 
                   {/* AI Status / Processing States integrated elegantly */}
                   {(geminiError || geminiSuccess || isGeneratingGemini) && (
-                    <div className="border-t border-zinc-850/40 pt-4 mt-1 flex flex-col gap-3">
+                    <div className="pt-2 mt-1 flex flex-col gap-3">
                       {geminiError && (
                         <div className="text-xs font-bold text-red-400 bg-red-950/10 border border-red-900/30 px-4 py-3 rounded-xl flex items-start gap-2.5 leading-relaxed animate-fade-in">
                           <AlertCircle size={15} className="shrink-0 text-red-400 mt-0.5" />
@@ -1703,69 +1845,89 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
 
                 {/* Tab layout switching hubs (Show Notes, Chapters Timestamps, Interactive Transcript) */}
                 <div className="flex flex-col gap-6">
-                  
+
                   {/* Tabs Row (no separator line below the tabs) */}
-                  <div className="flex items-center justify-between gap-6 mt-6 pb-2">
-                    <div className="flex items-center gap-6">
+                  <div className="flex items-center justify-between gap-4 mt-2 pb-2">
+                    <div className="flex items-end gap-6 overflow-x-auto whitespace-nowrap pt-10 pb-1.5 scrollbar-none max-w-full relative">
                       {[
                         { id: "notes", name: "Notes" },
                         { id: "timestamps", name: "Timestamps" },
-                        { id: "transcript", name: "Transcript" }
-                      ].map((tab) => (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => setDetailTab(tab.id as any)}
-                          className={`pb-1 text-xs font-bold uppercase tracking-widest transition-all cursor-pointer relative ${
-                            detailTab === tab.id 
-                              ? "text-white font-extrabold" 
-                              : "text-zinc-500 hover:text-zinc-300"
-                          }`}
-                        >
-                          {tab.name}
-                          {detailTab === tab.id && (
-                            <motion.div
-                              layoutId="activeTabUnderline"
-                              className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#9DAAF2]"
-                            />
-                          )}
-                        </button>
-                      ))}
-                    </div>
+                        { id: "transcript", name: "Transcript" },
+                        { id: "links", name: "Platform Links" }
+                      ].map((tab) => {
+                        const isEditable = ["timestamps", "transcript", "links"].includes(tab.id);
+                        const isRevealed = revealEditTabId === tab.id;
+                        return (
+                          <div
+                            key={tab.id}
+                            className="relative flex flex-col items-center select-none"
+                            onContextMenu={(e) => e.preventDefault()}
+                            style={{
+                              WebkitTouchCallout: "none",
+                              WebkitUserSelect: "none",
+                              userSelect: "none"
+                            }}
+                          >
+                            <button
+                              type="button"
+                              onMouseDown={(e) => handleTabPressStart(e, tab.id)}
+                              onTouchStart={(e) => handleTabPressStart(e, tab.id)}
+                              onMouseUp={(e) => handleTabPressEnd(e, tab.id)}
+                              onTouchEnd={(e) => handleTabPressEnd(e, tab.id)}
+                              onMouseLeave={handleTabPressCancel}
+                              onTouchCancel={handleTabPressCancel}
+                              style={{
+                                WebkitUserSelect: "none",
+                                WebkitTouchCallout: "none",
+                                userSelect: "none"
+                              }}
+                              className={`pb-1 text-xs font-bold uppercase tracking-widest transition-all cursor-pointer relative select-none outline-none ${
+                                detailTab === tab.id 
+                                  ? "text-white font-extrabold" 
+                                  : "text-zinc-500 hover:text-zinc-300"
+                              }`}
+                              title={isEditable ? "Hold to edit" : undefined}
+                            >
+                              {tab.name}
+                              {detailTab === tab.id && (
+                                <motion.div
+                                  layoutId="activeTabUnderline"
+                                  className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#9DAAF2]"
+                                />
+                              )}
+                            </button>
 
-                    {/* Pencil Edit Icon in the upper right corner of tabs row */}
-                    <div className="flex items-center gap-2">
-                      {detailTab === "timestamps" && (
-                        !isEditingTimestamps ? (
-                          <button
-                            type="button"
-                            onClick={() => setIsEditingTimestamps(true)}
-                            className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-[#9DAAF2] hover:bg-zinc-800/60 rounded-full transition-all cursor-pointer border border-zinc-805"
-                            title="Edit Timestamps"
-                          >
-                            <Edit size={13} />
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={addTimestampRow}
-                            className="w-8 h-8 flex items-center justify-center text-[#9DAAF2] hover:text-[#b8c2fa] hover:bg-[#9DAAF2]/15 rounded-full transition-all cursor-pointer border border-zinc-805"
-                            title="Add Timestamp"
-                          >
-                            <Plus size={15} />
-                          </button>
-                        )
-                      )}
-                      {detailTab === "transcript" && !isEditingTranscript && (
-                        <button
-                          type="button"
-                          onClick={() => setIsEditingTranscript(true)}
-                          className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-[#9DAAF2] hover:bg-zinc-800/60 rounded-full transition-all cursor-pointer border border-zinc-805"
-                          title="Edit Transcript"
-                        >
-                          <Edit size={13} />
-                        </button>
-                      )}
+                            {isRevealed && isEditable && (
+                              <motion.button
+                                initial={{ scale: 0.8, opacity: 0, y: 5 }}
+                                animate={{ scale: 1, opacity: 1, y: 0 }}
+                                exit={{ scale: 0.8, opacity: 0, y: 5 }}
+                                type="button"
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onTouchStart={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDetailTab(tab.id as any);
+                                  if (tab.id === "timestamps") setIsEditingTimestamps(true);
+                                  if (tab.id === "transcript") setIsEditingTranscript(true);
+                                  if (tab.id === "links") setIsEditingLinks(true);
+                                  setRevealEditTabId(null);
+                                }}
+                                className="absolute -top-9 left-1/2 -translate-x-1/2 z-50 px-2.5 py-1.5 rounded-full bg-[#9DAAF2] hover:bg-[#b5c2ff] text-zinc-950 text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer leading-none whitespace-nowrap shadow-xl"
+                                style={{
+                                  WebkitUserSelect: "none",
+                                  WebkitTouchCallout: "none",
+                                  userSelect: "none"
+                                }}
+                                title={`Edit ${tab.name}`}
+                              >
+                                <Edit size={10} />
+                                EDIT
+                              </motion.button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -1814,7 +1976,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                                     No chapter markers currently configured. Click "+ Add Timestamp Marker" to create elegant, seekable segments!
                                   </div>
                                 ) : (
-                                  <div className="space-y-3 pr-1 max-h-[420px] overflow-y-auto">
+                                  <div className="space-y-3 pr-1">
                                     {timestamps.map((item, index) => (
                                       <div key={index} className="flex gap-2.5 items-center bg-[#151517] p-2 rounded-xl border border-zinc-800/40">
                                         {/* Chapter Time */}
@@ -1837,20 +1999,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                                         {/* Actions */}
                                         <button
                                           type="button"
-                                          onClick={() => {
-                                            const secs = parseTimestampToSeconds(item.time);
-                                            handlePlayToggle(selectedEpisode);
-                                            setTimeout(() => seekToTime(secs), 100);
-                                          }}
-                                          className="p-2 rounded-lg text-zinc-500 hover:text-[#9DAAF2] hover:bg-zinc-850 cursor-pointer"
-                                          title="Seek audio progress to this segment"
-                                        >
-                                          <Play size={11} className="fill-current" />
-                                        </button>
-                                        <button
-                                          type="button"
                                           onClick={() => removeTimestampRow(index)}
-                                          className="p-2 rounded-lg text-zinc-555 hover:text-red-400 hover:bg-red-500/15 cursor-pointer transition-colors"
+                                          className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 cursor-pointer transition-colors"
                                           title="Delete segment row"
                                         >
                                           <Trash2 size={13} />
@@ -1861,52 +2011,54 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                                 )}
 
                                 {/* Editor Save & Cancel buttons directly below editing area */}
-                                <div className="flex items-center justify-between mt-4 pt-3 border-t border-zinc-900/45 flex-wrap gap-x-4 gap-y-3">
-                                  {/* Left: SAVE and Cancel */}
-                                  <div className="flex items-center gap-2.5">
-                                    <button
-                                      type="button"
-                                      onClick={handleSave}
-                                      disabled={isSaving}
-                                      className="px-5 py-2 rounded-full bg-[#9DAAF2] hover:bg-[#b2bdec] disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-widest flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-md select-none"
-                                    >
-                                      {isSaving ? (
-                                        <>
-                                          <div className="w-3 h-3 rounded-full border-2 border-zinc-950 border-t-transparent animate-spin" />
-                                          Saving...
-                                        </>
-                                      ) : (
-                                        <>
-                                          <Save size={12} />
-                                          SAVE
-                                        </>
-                                      )}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setIsEditingTimestamps(false);
-                                        setShowConfirmDeleteTimestamps(false);
-                                      }}
-                                      className="px-4 py-2 rounded-full border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white font-bold text-xs uppercase tracking-widest transition-all cursor-pointer select-none"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-
-                                  {/* Right: DELETE action triggered with consistent border style and modal confirm */}
-                                  <div className="ml-auto flex items-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => setShowConfirmDeleteTimestamps(true)}
-                                      disabled={isSaving}
-                                      className="px-4 py-2 rounded-full border border-zinc-800 hover:border-red-500 hover:bg-red-500/5 text-zinc-400 hover:text-red-400 font-bold text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-40 select-none text-[11px]"
-                                      title="Delete Timestamps"
-                                    >
-                                      <Trash2 size={12} />
-                                      DELETE
-                                    </button>
-                                  </div>
+                                <div className="flex items-center gap-3 mt-4 pt-2 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={handleSave}
+                                    disabled={isSaving}
+                                    className="px-6 py-2.5 rounded-full bg-[#9DAAF2] hover:bg-[#b2bdec] disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-widest flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer shadow-md select-none"
+                                  >
+                                    {isSaving ? (
+                                      <>
+                                        <div className="w-3 h-3 rounded-full border-2 border-zinc-950 border-t-transparent animate-spin" />
+                                        Saving...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Save size={12} />
+                                        SAVE
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={addTimestampRow}
+                                    className="px-5 py-2.5 rounded-full border border-[#9DAAF2]/30 bg-[#9DAAF2]/5 hover:bg-[#9DAAF2]/10 text-[#9DAAF2] font-bold text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1 shadow-sm leading-none"
+                                    title="Add new timestamp segment row"
+                                  >
+                                    <Plus size={12} />
+                                    Add Row
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setIsEditingTimestamps(false);
+                                      setShowConfirmDeleteTimestamps(false);
+                                    }}
+                                    className="px-5 py-2.5 rounded-full border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white font-bold text-xs uppercase tracking-widest transition-all cursor-pointer select-none"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowConfirmDeleteTimestamps(true)}
+                                    disabled={isSaving}
+                                    className="px-5 py-2.5 rounded-full border border-zinc-800 hover:border-red-500 hover:bg-red-500/5 text-zinc-400 hover:text-red-400 font-bold text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-40 select-none text-[11px]"
+                                    title="Delete Timestamps"
+                                  >
+                                    <Trash2 size={12} />
+                                    DELETE
+                                  </button>
                                 </div>
                               </div>
                             ) : (
@@ -1996,7 +2148,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                               /* Display Transcript Identical to Homepage split by newline */
                               <>
                                 {transcript ? (
-                                  <div className="flex flex-col gap-4 max-h-[500px] overflow-y-auto pr-1">
+                                  <div className="flex flex-col gap-4 pr-1">
                                     {transcript.split("\n").map((line, index) => {
                                       if (!line.trim()) return <div key={index} className="h-2" />;
 
@@ -2046,6 +2198,184 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                                       <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider">No Transcript Prepared</span>
                                       <p className="text-xs text-zinc-550 leading-relaxed normal-case">
                                         This episode does not have a dynamic, scrollable transcription prepared yet. Click "Edit Transcript" above to add it.
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {detailTab === "links" && (
+                          <div className="flex flex-col gap-6 pt-2 font-sans text-xs sm:text-sm text-zinc-300">
+
+                            {isEditingLinks ? (
+                              /* Interactive Input Form */
+                              <div className="flex flex-col gap-4">
+                                <div className="flex flex-col gap-2">
+                                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+                                    Spotify URL
+                                  </label>
+                                  <input
+                                    type="url"
+                                    value={spotifyUrl}
+                                    onChange={(e) => setSpotifyUrl(e.target.value)}
+                                    placeholder="e.g. https://open.spotify.com/episode/..."
+                                    className="w-full rounded-xl bg-[#151517] border border-[#2d2d30] focus:border-[#9DAAF2] p-3 text-xs sm:text-sm text-zinc-200 placeholder-zinc-800 focus:outline-none focus:ring-0"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+                                    Apple Podcasts URL
+                                  </label>
+                                  <input
+                                    type="url"
+                                    value={applePodcastsUrl}
+                                    onChange={(e) => setApplePodcastsUrl(e.target.value)}
+                                    placeholder="e.g. https://podcasts.apple.com/us/podcast/..."
+                                    className="w-full rounded-xl bg-[#151517] border border-[#2d2d30] focus:border-[#9DAAF2] p-3 text-xs sm:text-sm text-zinc-200 placeholder-zinc-800 focus:outline-none focus:ring-0"
+                                  />
+                                </div>
+
+                                <div className="flex flex-col gap-2">
+                                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-widest">
+                                    YouTube Video URL
+                                  </label>
+                                  <input
+                                    type="url"
+                                    value={youtubeUrl}
+                                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                                    placeholder="e.g. https://www.youtube.com/watch?v=..."
+                                    className="w-full rounded-xl bg-[#151517] border border-[#2d2d30] focus:border-[#9DAAF2] p-3 text-xs sm:text-sm text-zinc-200 placeholder-zinc-800 focus:outline-none focus:ring-0"
+                                  />
+                                </div>
+
+                                {/* Manual Save Actions */}
+                                <div className="flex items-center gap-3 mt-4 pt-2 w-full">
+                                  <button
+                                    type="button"
+                                    onClick={handleSave}
+                                    disabled={isSaving}
+                                    className="px-6 py-2.5 rounded-full bg-[#9DAAF2] hover:bg-[#b2bdec] disabled:opacity-40 text-zinc-950 font-black text-xs uppercase tracking-widest flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-md"
+                                  >
+                                    {isSaving ? (
+                                      <>
+                                        <div className="w-3 h-3 rounded-full border-2 border-zinc-950 border-t-transparent animate-spin" />
+                                        Saving...
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Save size={12} />
+                                        SAVE
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsEditingLinks(false)}
+                                    className="px-5 py-2.5 rounded-full border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white font-bold text-xs uppercase tracking-widest transition-all cursor-pointer select-none"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowConfirmDeleteLinks(true)}
+                                    disabled={isSaving}
+                                    className="px-5 py-2.5 rounded-full border border-zinc-800 hover:border-red-500 hover:bg-red-500/5 text-zinc-400 hover:text-red-400 font-bold text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-40 select-none text-[11px]"
+                                    title="Delete Platform Links"
+                                  >
+                                    <Trash2 size={12} />
+                                    DELETE
+                                  </button>
+                                  {saveStatus === "success" && (
+                                    <span className="text-xs text-green-400 font-bold uppercase tracking-wider animate-pulse">
+                                      ✓ Saved successfully
+                                    </span>
+                                  )}
+                                  {saveStatus === "error" && (
+                                    <span className="text-xs text-red-400 font-bold uppercase tracking-wider animate-pulse">
+                                      ✗ Failed to save
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              /* Beautiful Reading view for configured platform links */
+                              <>
+                                {(spotifyUrl || applePodcastsUrl || youtubeUrl) ? (
+                                  <div className="space-y-3.5 pt-1 max-w-2xl">
+                                    {spotifyUrl && (
+                                      <div className="flex items-center justify-between p-4.5 rounded-xl bg-[#141416]/70 border border-zinc-850 hover:border-zinc-800 transition-all">
+                                        <div className="flex items-center gap-3">
+                                          <div className="w-2.5 h-2.5 rounded-full bg-[#1DB954]" />
+                                          <div className="flex flex-col">
+                                            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Spotify</span>
+                                            <span className="text-xs font-mono text-zinc-500 truncate max-w-[200px] sm:max-w-xs md:max-w-md normal-case">{spotifyUrl}</span>
+                                          </div>
+                                        </div>
+                                        <a
+                                          href={spotifyUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs font-bold text-[#9DAAF2] hover:text-[#b8c2fa] uppercase tracking-widest flex items-center gap-1 cursor-pointer"
+                                        >
+                                          Visit
+                                          <ExternalLink size={11} />
+                                        </a>
+                                      </div>
+                                    )}
+                                    {applePodcastsUrl && (
+                                      <div className="flex items-center justify-between p-4.5 rounded-xl bg-[#141416]/70 border border-zinc-850 hover:border-zinc-800 transition-all">
+                                        <div className="flex items-center gap-3">
+                                          <div className="w-2.5 h-2.5 rounded-full bg-[#872EC4]" />
+                                          <div className="flex flex-col">
+                                            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Apple Podcasts</span>
+                                            <span className="text-xs font-mono text-zinc-500 truncate max-w-[200px] sm:max-w-xs md:max-w-md normal-case">{applePodcastsUrl}</span>
+                                          </div>
+                                        </div>
+                                        <a
+                                          href={applePodcastsUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs font-bold text-[#9DAAF2] hover:text-[#b8c2fa] uppercase tracking-widest flex items-center gap-1 cursor-pointer"
+                                        >
+                                          Visit
+                                          <ExternalLink size={11} />
+                                        </a>
+                                      </div>
+                                    )}
+                                    {youtubeUrl && (
+                                      <div className="flex items-center justify-between p-4.5 rounded-xl bg-[#141416]/70 border border-zinc-850 hover:border-zinc-800 transition-all">
+                                        <div className="flex items-center gap-3">
+                                          <div className="w-2.5 h-2.5 rounded-full bg-[#FF0000]" />
+                                          <div className="flex flex-col">
+                                            <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">YouTube</span>
+                                            <span className="text-xs font-mono text-zinc-500 truncate max-w-[200px] sm:max-w-xs md:max-w-md normal-case">{youtubeUrl}</span>
+                                          </div>
+                                        </div>
+                                        <a
+                                          href={youtubeUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs font-bold text-[#9DAAF2] hover:text-[#b8c2fa] uppercase tracking-widest flex items-center gap-1 cursor-pointer"
+                                        >
+                                          Watch
+                                          <ExternalLink size={11} />
+                                        </a>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="p-8 border border-dashed border-zinc-850 text-center rounded-xl py-12 flex flex-col items-center justify-center gap-4 animate-none">
+                                    <span className="w-10 h-10 rounded-full bg-[#9DAAF2]/15 flex items-center justify-center text-[#9DAAF2]">
+                                      <ExternalLink size={18} />
+                                    </span>
+                                    <div className="flex flex-col gap-1 max-w-sm">
+                                      <span className="text-xs text-zinc-400 font-bold uppercase tracking-wider">No Platform Links Configured</span>
+                                      <p className="text-xs text-zinc-500 leading-relaxed normal-case">
+                                        This episode does not have direct platform links connected yet. Click "Edit Platform Links" above to input links.
                                       </p>
                                     </div>
                                   </div>
@@ -2248,7 +2578,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
 
       {/* 4. DYNAMIC MODAL WINDOW CONFIRMATION */}
       <AnimatePresence>
-        {(showConfirmDeleteTimestamps || showConfirmDeleteTranscript) && (
+        {(showConfirmDeleteTimestamps || showConfirmDeleteTranscript || showConfirmDeleteLinks) && (
           <motion.div
             key="delete-confirm-modal"
             initial={{ opacity: 0 }}
@@ -2270,12 +2600,12 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
 
               {/* Title */}
               <h3 className="text-xl font-bold text-white tracking-tight uppercase font-sans">
-                {showConfirmDeleteTimestamps ? "Delete Timestamps?" : "Delete Transcript?"}
+                {showConfirmDeleteTimestamps ? "Delete Timestamps?" : showConfirmDeleteTranscript ? "Delete Transcript?" : "Delete Platform Links?"}
               </h3>
 
               {/* Subtitle */}
               <p className="text-zinc-400 text-xs sm:text-[13px] leading-relaxed normal-case mt-2.5 font-normal">
-                Are you sure you want to permanently clear the curated {showConfirmDeleteTimestamps ? "timestamps" : "transcript"} data for this episode? This action is irreversible.
+                Are you sure you want to permanently clear the curated {showConfirmDeleteTimestamps ? "timestamps" : showConfirmDeleteTranscript ? "transcript" : "platform links"} data for this episode? This action is irreversible.
               </p>
 
               {/* Button Groups */}
@@ -2285,6 +2615,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                   onClick={() => {
                     setShowConfirmDeleteTimestamps(false);
                     setShowConfirmDeleteTranscript(false);
+                    setShowConfirmDeleteLinks(false);
                   }}
                   className="flex-1 py-2.5 rounded-full border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white font-bold text-xs uppercase tracking-widest transition-colors cursor-pointer"
                 >
@@ -2292,7 +2623,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                 </button>
                 <button
                   type="button"
-                  onClick={showConfirmDeleteTimestamps ? handleDeleteTimestamps : handleDeleteTranscript}
+                  onClick={showConfirmDeleteTimestamps ? handleDeleteTimestamps : showConfirmDeleteTranscript ? handleDeleteTranscript : handleDeleteLinks}
                   disabled={isSaving}
                   className="flex-1 py-2.5 rounded-full bg-red-600 hover:bg-red-500 disabled:bg-red-900 disabled:opacity-55 text-white font-bold text-xs uppercase tracking-widest transition-colors cursor-pointer flex items-center justify-center gap-2"
                 >
