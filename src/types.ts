@@ -73,19 +73,19 @@ export const podcastCategories: PodcastCategory[] = [
 export const platformLinks: PlatformLink[] = [
   {
     name: "YouTube",
-    url: "https://youtube.com/@renamalikmd",
+    url: "https://www.youtube.com/@RenaMalikMD",
     iconName: "Youtube",
     colorClass: "hover:text-red-500",
   },
   {
     name: "Spotify",
-    url: "https://open.spotify.com/show/30xyW3ExCD3f9FZR8Wf2Mn",
+    url: "https://open.spotify.com/show/0uQLN5kQ5Z3pZ5Xo79O5mN",
     iconName: "Radio",
     colorClass: "hover:text-green-500",
   },
   {
     name: "Apple Podcasts",
-    url: "https://podcasts.apple.com/us/podcast/rena-malik-md-podcast/id1709412238",
+    url: "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1653423714",
     iconName: "Podcast",
     colorClass: "hover:text-purple-400",
   },

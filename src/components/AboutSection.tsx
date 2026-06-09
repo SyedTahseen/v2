@@ -44,7 +44,7 @@ export default function AboutSection() {
   const platforms = [
     {
       name: "YouTube",
-      url: "https://youtube.com/@renamalikmd",
+      url: "https://www.youtube.com/@RenaMalikMD",
       icon: (
         <div className="w-5 sm:w-6 h-5 sm:h-6 rounded bg-[#FF0000] flex items-center justify-center shrink-0">
           <Play size={8} className="text-white fill-white translate-x-[0.5px]" />
@@ -53,7 +53,7 @@ export default function AboutSection() {
     },
     {
       name: "Spotify",
-      url: "https://open.spotify.com/show/30xyW3ExCD3f9FZR8Wf2Mn",
+      url: "https://open.spotify.com/show/0uQLN5kQ5Z3pZ5Xo79O5mN",
       icon: (
         <div className="w-5 sm:w-6 h-5 sm:h-6 rounded-full bg-[#1DB954] flex items-center justify-center shrink-0">
           <Radio size={11} className="text-black" />
@@ -62,7 +62,7 @@ export default function AboutSection() {
     },
     {
       name: "Apple",
-      url: "https://podcasts.apple.com/us/podcast/rena-malik-md-podcast/id1709412238",
+      url: "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1653423714",
       icon: (
         <div className="w-5 sm:w-6 h-5 sm:h-6 rounded bg-[#9C33EC] flex items-center justify-center shrink-0">
           <Podcast size={11} className="text-white" />
@@ -71,7 +71,7 @@ export default function AboutSection() {
     },
     {
       name: "Podlink",
-      url: "https://pod.link/1709412238",
+      url: "https://pod.link/1653423714",
       icon: (
         <div className="w-5 sm:w-6 h-5 sm:h-6 rounded-full bg-[#2F6DF6] flex items-center justify-center shrink-0">
           <Link size={10} className="text-white" />

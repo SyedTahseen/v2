@@ -139,9 +139,11 @@ function rssRegexParser(xmlText: string) {
     const pubDateMatch = content.match(/<pubDate>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/pubDate>/i);
     const durationMatch = content.match(/<itunes:duration>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/itunes:duration>/i);
     const enclosureMatch = content.match(/<enclosure\s+[^>]*url=["']([^"']+)["']/i);
+    const guidMatch = content.match(/<guid[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/guid>/i);
 
     const title = titleMatch ? titleMatch[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim() : "Unknown Episode";
     const rawDesc = descMatch ? descMatch[1].trim() : "";
+    const guid = guidMatch ? guidMatch[1].replace(/<!\[CDATA\[|\]\]>/g, "").trim() : "";
     
     // Decentre and clean description tags
     let description = rawDesc
@@ -238,6 +240,7 @@ function rssRegexParser(xmlText: string) {
       id: `rss-ep-${count}`,
       number: count, // set ordering next
       title,
+      guid,
       guest,
       guestTitle,
       duration,
@@ -736,81 +739,31 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
-function isTitleMatch(originalTitle: string, foundTitle: string, debugLogs?: string[]): boolean {
-  if (!originalTitle || !foundTitle) return false;
-
-  const normalize = (text: string) => {
+function isTitleMatch(originalTitle: string, foundTitle: string): boolean {
+  const cleanWords = (text: string) => {
     return text
       .toLowerCase()
-      // Split on standard platform delimiters: pipe symbol (|), emdash (—), endash (–), standard hyphen (-) flanked by spaces
-      .split(/\s*[\u2013\u2014|]\s*/)[0]
-      .split(/\s+-\s+/)[0]
-      // Split on guest indicators or features
-      .split(/\s+ft\.?\s+/i)[0]
-      .split(/\s+feat\.?\s+/i)[0]
-      .replace(/[^a-z0-9]/g, "") // remove all non-alphanumeric chars
-      .trim();
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !["the", "and", "for", "with", "from", "you", "your", "that", "this", "moment", "show", "rena", "malik", "episode", "podcast", "channel"].includes(w));
   };
-
-  const normOrig = normalize(originalTitle);
-  const normFound = normalize(foundTitle);
-
-  if (!normOrig) return false;
-
-  // Exact comparison or full structural containment
-  const isMatch = (normOrig === normFound || normFound.includes(normOrig) || normOrig.includes(normFound));
-
-  if (debugLogs) {
-    debugLogs.push(`  [Title Match] Compare:\n` +
-                   `    Original: "${originalTitle}" -> "${normOrig}"\n` +
-                   `    Found:    "${foundTitle}" -> "${normFound}"\n` +
-                   `    Result:   ${isMatch ? "PASS" : "REJECT"}`);
+  const origWords = cleanWords(originalTitle);
+  const foundWords = cleanWords(foundTitle);
+  if (origWords.length === 0) return true; // fallback if no significant words in original
+  
+  let matches = 0;
+  for (const word of origWords) {
+    if (foundWords.includes(word)) {
+      matches++;
+    }
   }
-
-  return isMatch;
+  
+  // We want at least 2 matching significant words or 30% of the original significant words
+  const threshold = Math.min(2, Math.ceil(origWords.length * 0.3));
+  return matches >= threshold;
 }
 
-async function fetchDeliriusYt(query: string, apiBase: string, debugLogs: string[]): Promise<any[]> {
-  try {
-    const url = `${apiBase}/search/ytsearch?q=${encodeURIComponent(query)}`;
-    debugLogs.push(`[info] [Delirius YouTube] Querying API: ${url}`);
-    const res = await fetch(url);
-    if (!res.ok) {
-      debugLogs.push(`[error] [Delirius YouTube] HTTP error! Status: ${res.status}`);
-      return [];
-    }
-    const json: any = await res.json();
-    if (json && json.status && Array.isArray(json.data)) {
-      return json.data;
-    }
-    debugLogs.push(`[warning] [Delirius YouTube] Unexpected response structure: ${JSON.stringify(json).slice(0, 200)}`);
-  } catch (err: any) {
-    debugLogs.push(`[error] [Delirius YouTube] Request failed: ${err.message || err}`);
-  }
-  return [];
-}
-
-async function fetchDeliriusGoogle(query: string, apiBase: string, debugLogs: string[]): Promise<any[]> {
-  try {
-    const url = `${apiBase}/search/googlesearch?query=${encodeURIComponent(query)}`;
-    debugLogs.push(`[info] [Delirius Google] Querying API: ${url}`);
-    const res = await fetch(url);
-    if (!res.ok) {
-      debugLogs.push(`[error] [Delirius Google] HTTP error! Status: ${res.status}`);
-      return [];
-    }
-    const json: any = await res.json();
-    if (json && json.status && Array.isArray(json.data)) {
-      return json.data;
-    }
-    debugLogs.push(`[warning] [Delirius Google] Unexpected response structure: ${JSON.stringify(json).slice(0, 200)}`);
-  } catch (err: any) {
-    debugLogs.push(`[error] [Delirius Google] Request failed: ${err.message || err}`);
-  }
-  return [];
-}
-
-async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
+async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
   debugLogs.push(`[info] Starting optimized targeted web search scans for: "${episodeTitle}"`);
 
@@ -818,141 +771,143 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
   let applePodcastsUrl = "";
   let youtubeUrl = "";
 
-  const apiBase = (process.env.DELIRIUS_API_BASE || "https://api.delirius.store").replace(/\/$/, "");
+  // 1. Direct Apple Podcasts API Search
+  debugLogs.push(`[info] [Apple Podcasts] Searching directly on itunes.apple.com...`);
+  try {
+    const appleSearchUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(episodeTitle)}&entity=podcastEpisode&limit=15`;
+    debugLogs.push(`[info] [Apple Podcasts] Fetching URL: ${appleSearchUrl}`);
+    const response = await fetch(appleSearchUrl, { headers: { "Accept": "application/json" } });
+    if (response.ok) {
+      const data: any = await response.json();
+      if (data && data.results && data.results.length > 0) {
+        debugLogs.push(`[info] [Apple Podcasts] Found ${data.results.length} candidate episodes.`);
 
-  // 1. YouTube Resolving Flow
-  // A. Try official YouTube v3 Search API
+        // Resolve guid to use for exact matching
+        let targetGuid = episodeGuid;
+        if (!targetGuid) {
+          let list = cachedEpisodes?.data;
+          if (!list) {
+            try {
+              const rssUrl = process.env.PODCAST_RSS_URL || "https://feeds.megaphone.fm/renamalikmd";
+              const rssResponse = await fetch(rssUrl);
+              if (rssResponse.ok) {
+                const xmlText = await rssResponse.text();
+                list = rssRegexParser(xmlText);
+              }
+            } catch (err: any) {
+              debugLogs.push(`[info] [Apple Podcasts] Dynamic RSS parser lookup failure: ${err.message || err}`);
+            }
+          }
+          if (list) {
+            const matchingEp = list.find(ep => ep.title === episodeTitle || isTitleMatch(episodeTitle, ep.title));
+            if (matchingEp && matchingEp.guid) {
+              targetGuid = matchingEp.guid;
+              debugLogs.push(`[info] [Apple Podcasts] Resolved target XML GUID dynamically: ${targetGuid}`);
+            }
+          }
+        }
+
+        let bestResult = null;
+        for (const res of data.results) {
+          const resGuid = res.episodeGuid;
+          const trackName = res.trackName || "";
+          debugLogs.push(` [Apple Scan] Candidate Title: "${trackName}" | GUID: "${resGuid}"`);
+
+          if (targetGuid && resGuid === targetGuid) {
+            bestResult = res;
+            debugLogs.push(`[success] [Apple Podcasts] 100% Exact match found via GUID matching: "${resGuid}"`);
+            break;
+          }
+        }
+
+        // If no exact guid match, fallback to title matching
+        if (!bestResult) {
+          for (const res of data.results) {
+            const trackName = res.trackName || "";
+            if (isTitleMatch(episodeTitle, trackName)) {
+              bestResult = res;
+              debugLogs.push(`[success] [Apple Podcasts] Title similarity match found: "${trackName}"`);
+              break;
+            }
+          }
+        }
+
+        if (bestResult) {
+          applePodcastsUrl = bestResult.trackViewUrl || "";
+          if (applePodcastsUrl) {
+            debugLogs.push(`[success] [Apple Podcasts] Resolved url: ${applePodcastsUrl}`);
+          }
+        } else {
+          debugLogs.push(`[warning] [Apple Podcasts] None of the candidates matched GUID or Title. Rejecting.`);
+        }
+      } else {
+        debugLogs.push(`[warning] [Apple Podcasts] No search results returned from itunes.apple.com.`);
+      }
+    } else {
+      debugLogs.push(`[error] [Apple Podcasts] Search request failed with status: ${response.status}`);
+    }
+  } catch (appleErr: any) {
+    debugLogs.push(`[error] [Apple Podcasts] Exception during search: ${appleErr.message || appleErr}`);
+  }
+
+  // 2. Direct YouTube Data API Search (if configured)
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (youtubeApiKey) {
-    debugLogs.push(`[info] [YouTube] Official API Key detected. Launching search...`);
+    debugLogs.push(`[info] [YouTube] API Key detected. Launching high-precision native search...`);
     try {
       const youtubeSearchQuery = `"Rena Malik" ${episodeTitle}`;
       const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
+      
       const response = await fetch(searchUrl);
       if (response.ok) {
         const data: any = await response.json();
         if (data && data.items && data.items.length > 0) {
-          debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from official API...`);
+          debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from API...`);
+          
+          let matchedItem = null;
           for (const item of data.items) {
             const videoTitle = item.snippet?.title || "";
-            const isMatch = isTitleMatch(episodeTitle, videoTitle, debugLogs);
-            debugLogs.push(` [YouTube Official Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
+            const isMatch = isTitleMatch(episodeTitle, videoTitle);
+            debugLogs.push(` [YouTube Scan] Checked: "${videoTitle}" | Is Title Match? ${isMatch ? "YES" : "NO"}`);
             if (isMatch) {
-              const videoId = item.id?.videoId;
-              if (videoId) {
-                youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-                debugLogs.push(`[success] [YouTube] Resolved via official YouTube search API: ${youtubeUrl} | Title: "${videoTitle}"`);
-                break;
-              }
+              matchedItem = item;
+              break;
             }
           }
+
+          if (matchedItem) {
+            const videoId = matchedItem.id?.videoId;
+            if (videoId) {
+              youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+              debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${matchedItem.snippet?.title || 'Unknown'}"`);
+            }
+          } else {
+            debugLogs.push(`[warning] [YouTube] None of the top ${data.items.length} search results passed title similarity checking. Rejecting potential mismatch.`);
+          }
+        } else {
+          debugLogs.push(`[warning] [YouTube] No items returned from the search API.`);
         }
       } else {
-        debugLogs.push(`[error] [YouTube] Official API failed with status: ${response.status}`);
+        debugLogs.push(`[error] [YouTube] API request failed with status: ${response.status}`);
       }
     } catch (ytErr: any) {
-      debugLogs.push(`[error] [YouTube] Official API exception: ${ytErr.message || ytErr}`);
+      debugLogs.push(`[error] [YouTube] Exception during lookup: ${ytErr.message || ytErr}`);
     }
+  } else {
+    debugLogs.push(`[info] [YouTube] API key not found in environment. Defaulting to general channel url.`);
   }
 
-  // B. Try Delirius YT Search API
-  if (!youtubeUrl) {
-    debugLogs.push(`[info] [YouTube] Attempting search via Delirius ytsearch API...`);
-    const ytQuery = `Rena Malik ${episodeTitle}`;
-    const ytItems = await fetchDeliriusYt(ytQuery, apiBase, debugLogs);
-    if (ytItems && ytItems.length > 0) {
-      debugLogs.push(`[info] [YouTube] Scanning ${ytItems.length} candidate results from Delirius API...`);
-      for (const item of ytItems) {
-        const videoTitle = item.title || "";
-        const isMatch = isTitleMatch(episodeTitle, videoTitle, debugLogs);
-        debugLogs.push(` [YouTube Delirius Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
-        if (isMatch) {
-          const rawUrl = item.url || (item.videoId ? `https://www.youtube.com/watch?v=${item.videoId}` : "");
-          if (rawUrl) {
-            youtubeUrl = rawUrl;
-            debugLogs.push(`[success] [YouTube] Resolved via Delirius ytsearch API: ${youtubeUrl} | Title: "${videoTitle}"`);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  // C. Try Delirius Google Search API for YouTube
-  if (!youtubeUrl) {
-    debugLogs.push(`[info] [YouTube] Attempting search via Delirius Google search for YouTube...`);
-    const googleQuery = `site:youtube.com "Rena Malik" ${episodeTitle}`;
-    const googleItems = await fetchDeliriusGoogle(googleQuery, apiBase, debugLogs);
-    if (googleItems && googleItems.length > 0) {
-      debugLogs.push(`[info] [YouTube] Scanning ${googleItems.length} Google search entries for YouTube...`);
-      for (const item of googleItems) {
-        const itemTitle = item.title || "";
-        const itemUrl = item.url || "";
-        const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
-        debugLogs.push(` [YouTube Google Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
-        if (isMatch && (itemUrl.includes("youtube.com") || itemUrl.includes("youtu.be"))) {
-          youtubeUrl = itemUrl;
-          debugLogs.push(`[success] [YouTube] Resolved via Delirius Google search API: ${youtubeUrl}`);
-          break;
-        }
-      }
-    }
-  }
-
-  // 2. Spotify Resolving Flow
-  debugLogs.push(`[info] [Spotify] Attempting search via Delirius Google search...`);
-  const spotifyQuery = `site:spotify.com "Rena Malik" ${episodeTitle}`;
-  const spotifyItems = await fetchDeliriusGoogle(spotifyQuery, apiBase, debugLogs);
-  if (spotifyItems && spotifyItems.length > 0) {
-    debugLogs.push(`[info] [Spotify] Scanning ${spotifyItems.length} Google search entries for Spotify...`);
-    for (const item of spotifyItems) {
-      const itemTitle = item.title || "";
-      const itemUrl = item.url || "";
-      const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
-      debugLogs.push(` [Spotify Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
-      if (itemUrl.includes("spotify.com") && (itemUrl.includes("/episode/") || itemUrl.includes("/track/"))) {
-        if (isMatch) {
-          spotifyUrl = itemUrl;
-          debugLogs.push(`[success] [Spotify] Resolved exact level episode link: ${spotifyUrl}`);
-          break;
-        }
-      }
-    }
-  }
-
-  // 3. Apple Podcasts Resolving Flow
-  debugLogs.push(`[info] [Apple Podcasts] Attempting search via Delirius Google search...`);
-  const appleQuery = `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`;
-  const appleItems = await fetchDeliriusGoogle(appleQuery, apiBase, debugLogs);
-  if (appleItems && appleItems.length > 0) {
-    debugLogs.push(`[info] [Apple Podcasts] Scanning ${appleItems.length} Google search entries for Apple Podcasts...`);
-    for (const item of appleItems) {
-      const itemTitle = item.title || "";
-      const itemUrl = item.url || "";
-      const isMatch = isTitleMatch(episodeTitle, itemTitle, debugLogs);
-      debugLogs.push(` [Apple Podcast Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
-      if (itemUrl.includes("podcasts.apple.com") && (itemUrl.includes("/podcast/") || itemUrl.includes("/id"))) {
-        const isMainShow = itemUrl.endsWith("/id1709412238") || itemUrl.endsWith("/id1709412238/");
-        if (!isMainShow && isMatch) {
-          applePodcastsUrl = itemUrl;
-          debugLogs.push(`[success] [Apple Podcasts] Resolved exact level episode link: ${applePodcastsUrl}`);
-          break;
-        }
-      }
-    }
-  }
-
-  // 4. Default Fail-Safes if not found
+  // 3. Fallbacks if not found after searches
   if (!spotifyUrl) {
-    spotifyUrl = "https://open.spotify.com/show/30xyW3ExCD3f9FZR8Wf2Mn";
+    spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
     debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
   }
   if (!applePodcastsUrl) {
-    applePodcastsUrl = "https://podcasts.apple.com/us/podcast/rena-malik-md-podcast/id1709412238";
+    applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
     debugLogs.push(`[warning] Apple Podcasts episode-specific link search failed. Defaulted to show: ${applePodcastsUrl}`);
   }
   if (!youtubeUrl) {
-    youtubeUrl = "https://youtube.com/@renamalikmd";
+    youtubeUrl = "https://www.youtube.com/@RenaMalikMD";
     debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
   }
 
@@ -970,13 +925,13 @@ app.post("/api/admin/auto-grab-links", async (req, res) => {
   if (!authHeader || authHeader !== `Bearer ${AUTH_TOKEN}`) {
     return res.status(401).json({ success: false, message: "Unauthorized. Please authenticate first." });
   }
-  const { title } = req.body || {};
+  const { title, guid } = req.body || {};
   if (!title) {
     return res.status(400).json({ success: false, message: "Missing episode title" });
   }
 
   try {
-    const links = await searchPlatformLinks(title);
+    const links = await searchPlatformLinks(title, guid);
     res.json({ success: true, ...links });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || "Failed to search links" });
@@ -1302,7 +1257,7 @@ app.get("/api/youtube", async (req, res) => {
     return res.json(FALLBACK_YOUTUBE_DATA);
   }
 
-  const handle = process.env.YOUTUBE_CHANNEL_HANDLE || "@renamalikmd";
+  const handle = process.env.YOUTUBE_CHANNEL_HANDLE || "@RenaMalikMD";
   console.log(`[YouTube API] Key detected. Fetching live channels & playlists for user handle: ${handle}`);
 
   try {

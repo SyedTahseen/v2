@@ -738,7 +738,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
           "Authorization": `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          title: selectedEpisode.title
+          title: selectedEpisode.title,
+          guid: selectedEpisode.guid
         })
       });
 
@@ -2654,7 +2655,7 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
                 { icon: <Linkedin size={12} />, href: "https://linkedin.com" },
                 { icon: <Twitter size={12} />, href: "https://twitter.com" },
                 { icon: <Instagram size={12} />, href: "https://instagram.com/renamalikmd" },
-                { icon: <Youtube size={12} />, href: "https://youtube.com/@renamalikmd" },
+                { icon: <Youtube size={12} />, href: "https://youtube.com/@RenaMalikMD" },
               ].map((soc, sIdx) => (
                 <a 
                   key={sIdx}
