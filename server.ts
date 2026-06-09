@@ -760,6 +760,46 @@ function isTitleMatch(originalTitle: string, foundTitle: string): boolean {
   return matches >= threshold;
 }
 
+async function fetchDeliriusYt(query: string, apiBase: string, debugLogs: string[]): Promise<any[]> {
+  try {
+    const url = `${apiBase}/search/ytsearch?q=${encodeURIComponent(query)}`;
+    debugLogs.push(`[info] [Delirius YouTube] Querying API: ${url}`);
+    const res = await fetch(url);
+    if (!res.ok) {
+      debugLogs.push(`[error] [Delirius YouTube] HTTP error! Status: ${res.status}`);
+      return [];
+    }
+    const json: any = await res.json();
+    if (json && json.status && Array.isArray(json.data)) {
+      return json.data;
+    }
+    debugLogs.push(`[warning] [Delirius YouTube] Unexpected response structure: ${JSON.stringify(json).slice(0, 200)}`);
+  } catch (err: any) {
+    debugLogs.push(`[error] [Delirius YouTube] Request failed: ${err.message || err}`);
+  }
+  return [];
+}
+
+async function fetchDeliriusGoogle(query: string, apiBase: string, debugLogs: string[]): Promise<any[]> {
+  try {
+    const url = `${apiBase}/search/googlesearch?query=${encodeURIComponent(query)}`;
+    debugLogs.push(`[info] [Delirius Google] Querying API: ${url}`);
+    const res = await fetch(url);
+    if (!res.ok) {
+      debugLogs.push(`[error] [Delirius Google] HTTP error! Status: ${res.status}`);
+      return [];
+    }
+    const json: any = await res.json();
+    if (json && json.status && Array.isArray(json.data)) {
+      return json.data;
+    }
+    debugLogs.push(`[warning] [Delirius Google] Unexpected response structure: ${JSON.stringify(json).slice(0, 200)}`);
+  } catch (err: any) {
+    debugLogs.push(`[error] [Delirius Google] Request failed: ${err.message || err}`);
+  }
+  return [];
+}
+
 async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
   debugLogs.push(`[info] Starting optimized targeted web search scans for: "${episodeTitle}"`);
@@ -768,160 +808,131 @@ async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: 
   let applePodcastsUrl = "";
   let youtubeUrl = "";
 
-  // 1. Direct YouTube Data API Search (if configured)
+  const apiBase = (process.env.DELIRIUS_API_BASE || "https://api.delirius.store").replace(/\/$/, "");
+
+  // 1. YouTube Resolving Flow
+  // A. Try official YouTube v3 Search API
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (youtubeApiKey) {
-    debugLogs.push(`[info] [YouTube] API Key detected. Launching high-precision native search...`);
+    debugLogs.push(`[info] [YouTube] Official API Key detected. Launching search...`);
     try {
       const youtubeSearchQuery = `"Rena Malik" ${episodeTitle}`;
       const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
-      
       const response = await fetch(searchUrl);
       if (response.ok) {
         const data: any = await response.json();
         if (data && data.items && data.items.length > 0) {
-          debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from API...`);
-          
-          let matchedItem = null;
+          debugLogs.push(`[info] [YouTube] Scanning ${data.items.length} candidate results pattern-matched from official API...`);
           for (const item of data.items) {
             const videoTitle = item.snippet?.title || "";
             const isMatch = isTitleMatch(episodeTitle, videoTitle);
-            debugLogs.push(` [YouTube Scan] Checked: "${videoTitle}" | Is Title Match? ${isMatch ? "YES" : "NO"}`);
+            debugLogs.push(` [YouTube Official Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
             if (isMatch) {
-              matchedItem = item;
-              break;
+              const videoId = item.id?.videoId;
+              if (videoId) {
+                youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                debugLogs.push(`[success] [YouTube] Resolved via official YouTube search API: ${youtubeUrl} | Title: "${videoTitle}"`);
+                break;
+              }
             }
           }
-
-          if (matchedItem) {
-            const videoId = matchedItem.id?.videoId;
-            if (videoId) {
-              youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-              debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${matchedItem.snippet?.title || 'Unknown'}"`);
-            }
-          } else {
-            debugLogs.push(`[warning] [YouTube] None of the top ${data.items.length} search results passed title similarity checking. Rejecting potential mismatch.`);
-          }
-        } else {
-          debugLogs.push(`[warning] [YouTube] No items returned from the search API.`);
         }
       } else {
-        debugLogs.push(`[error] [YouTube] API request failed with status: ${response.status}`);
+        debugLogs.push(`[error] [YouTube] Official API failed with status: ${response.status}`);
       }
     } catch (ytErr: any) {
-      debugLogs.push(`[error] [YouTube] Exception during lookup: ${ytErr.message || ytErr}`);
+      debugLogs.push(`[error] [YouTube] Official API exception: ${ytErr.message || ytErr}`);
     }
-  } else {
-    debugLogs.push(`[info] [YouTube] API key not found in environment. Will resolve via Gemini grounding instead.`);
   }
 
-  // 2. Combine the remaining searches into ONE SINGLE Gemini call to reduce quota usage by 300%
-  const platformsToSearch: string[] = [];
-  if (!spotifyUrl) platformsToSearch.push("Spotify");
-  if (!applePodcastsUrl) platformsToSearch.push("Apple Podcasts");
-  if (!youtubeUrl) platformsToSearch.push("YouTube");
-
-  if (platformsToSearch.length > 0) {
-    debugLogs.push(`[info] Gemini Grounding requested for: ${platformsToSearch.join(", ")}`);
-    
-    let attempts = 0;
-    const maxAttempts = 2;
-    let delayMs = 3000;
-    let success = false;
-
-    while (attempts < maxAttempts && !success) {
-      try {
-        const ai = getGemini();
-        
-        let instructions = `Perform a web search using Google Search Grounding to find the official, direct episode page URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik) on the following platform(s):\n`;
-        if (!spotifyUrl) {
-          instructions += `- Spotify: site:spotify.com "Rena Malik" ${episodeTitle}\n`;
-        }
-        if (!applePodcastsUrl) {
-          instructions += `- Apple Podcasts: site:podcasts.apple.com "Rena Malik" ${episodeTitle}\n`;
-        }
-        if (!youtubeUrl) {
-          instructions += `- YouTube: site:youtube.com "Rena Malik" ${episodeTitle}\n`;
-        }
-
-        instructions += `
-Requirements:
-1. You MUST find and return the exact episode URLs.
-2. If any link is not found, state "Spotify: NOT_FOUND" or "Apple: NOT_FOUND" or "YouTube: NOT_FOUND". Do not invent false links.
-3. Your output must clearly list:
-Spotify: [url]
-Apple: [url]
-YouTube: [url]`;
-
-        debugLogs.push(`[info] [Gemini] Dispatching consolidated search (Attempt ${attempts + 1}/${maxAttempts})...`);
-        
-        const modelResponse = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: instructions,
-          config: {
-            tools: [{ googleSearch: {} }]
-          }
-        });
-
-        const outputText = modelResponse.text || "";
-        debugLogs.push(`[info] [Gemini] Retrieved response successfully.`);
-
-        const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
-        if (metadata) {
-          if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
-            debugLogs.push(`[info] [Gemini] Grounding queries run: ${JSON.stringify(metadata.webSearchQueries)}`);
-          }
-          if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
-            metadata.groundingChunks.forEach((chunk) => {
-              if (chunk.web?.uri) {
-                const title = chunk.web.title || "Untitled";
-                const uri = chunk.web.uri;
-                debugLogs.push(` [source] "${title}" -> ${uri}`);
-              }
-            });
+  // B. Try Delirius YT Search API
+  if (!youtubeUrl) {
+    debugLogs.push(`[info] [YouTube] Attempting search via Delirius ytsearch API...`);
+    const ytQuery = `Rena Malik ${episodeTitle}`;
+    const ytItems = await fetchDeliriusYt(ytQuery, apiBase, debugLogs);
+    if (ytItems && ytItems.length > 0) {
+      debugLogs.push(`[info] [YouTube] Scanning ${ytItems.length} candidate results from Delirius API...`);
+      for (const item of ytItems) {
+        const videoTitle = item.title || "";
+        const isMatch = isTitleMatch(episodeTitle, videoTitle);
+        debugLogs.push(` [YouTube Delirius Scan] Checked: "${videoTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
+        if (isMatch) {
+          const rawUrl = item.url || (item.videoId ? `https://www.youtube.com/watch?v=${item.videoId}` : "");
+          if (rawUrl) {
+            youtubeUrl = rawUrl;
+            debugLogs.push(`[success] [YouTube] Resolved via Delirius ytsearch API: ${youtubeUrl} | Title: "${videoTitle}"`);
+            break;
           }
         }
-
-        // Search both text response and grounding metadata sources to extract URLs
-        const allTextAndUrls = outputText + " " + (metadata?.groundingChunks?.map(c => c.web?.uri).filter(Boolean).join(" ") || "");
-        const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
-        const foundUrls = allTextAndUrls.match(urlRegex) || [];
-
-        for (const rawUrl of foundUrls) {
-          const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
-          if (!spotifyUrl && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
-            spotifyUrl = cleanUrl;
-            debugLogs.push(`[success] [Spotify] Extracted exact link: ${spotifyUrl}`);
-          } else if (!applePodcastsUrl && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
-            applePodcastsUrl = cleanUrl;
-            debugLogs.push(`[success] [Apple] Extracted exact link: ${applePodcastsUrl}`);
-          } else if (!youtubeUrl && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
-            youtubeUrl = cleanUrl;
-            debugLogs.push(`[success] [YouTube] Extracted exact link: ${youtubeUrl}`);
-          }
-        }
-
-        success = true;
-
-      } catch (err: any) {
-        const errStr = err.message || JSON.stringify(err);
-        const isRateLimit = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.includes("RESOURCE_EXHAUSTED");
-
-        if (isRateLimit && attempts < maxAttempts - 1) {
-          attempts++;
-          debugLogs.push(`[warning] [Gemini] Hit rate limit. Retrying in ${delayMs / 1000}s...`);
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-          delayMs *= 2;
-          continue;
-        }
-
-        debugLogs.push(`[error] [Gemini] Search failed: ${errStr}`);
-        break; // Break loop on non-retryable error
       }
     }
   }
 
-  // 3. Fallbacks if not found after searches
+  // C. Try Delirius Google Search API for YouTube
+  if (!youtubeUrl) {
+    debugLogs.push(`[info] [YouTube] Attempting search via Delirius Google search for YouTube...`);
+    const googleQuery = `site:youtube.com "Rena Malik" ${episodeTitle}`;
+    const googleItems = await fetchDeliriusGoogle(googleQuery, apiBase, debugLogs);
+    if (googleItems && googleItems.length > 0) {
+      debugLogs.push(`[info] [YouTube] Scanning ${googleItems.length} Google search entries for YouTube...`);
+      for (const item of googleItems) {
+        const itemTitle = item.title || "";
+        const itemUrl = item.url || "";
+        const isMatch = isTitleMatch(episodeTitle, itemTitle);
+        debugLogs.push(` [YouTube Google Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
+        if (isMatch && (itemUrl.includes("youtube.com") || itemUrl.includes("youtu.be"))) {
+          youtubeUrl = itemUrl;
+          debugLogs.push(`[success] [YouTube] Resolved via Delirius Google search API: ${youtubeUrl}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // 2. Spotify Resolving Flow
+  debugLogs.push(`[info] [Spotify] Attempting search via Delirius Google search...`);
+  const spotifyQuery = `site:spotify.com "Rena Malik" ${episodeTitle}`;
+  const spotifyItems = await fetchDeliriusGoogle(spotifyQuery, apiBase, debugLogs);
+  if (spotifyItems && spotifyItems.length > 0) {
+    debugLogs.push(`[info] [Spotify] Scanning ${spotifyItems.length} Google search entries for Spotify...`);
+    for (const item of spotifyItems) {
+      const itemTitle = item.title || "";
+      const itemUrl = item.url || "";
+      const isMatch = isTitleMatch(episodeTitle, itemTitle);
+      debugLogs.push(` [Spotify Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
+      if (itemUrl.includes("spotify.com") && (itemUrl.includes("/episode/") || itemUrl.includes("/track/"))) {
+        if (isMatch) {
+          spotifyUrl = itemUrl;
+          debugLogs.push(`[success] [Spotify] Resolved exact level episode link: ${spotifyUrl}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // 3. Apple Podcasts Resolving Flow
+  debugLogs.push(`[info] [Apple Podcasts] Attempting search via Delirius Google search...`);
+  const appleQuery = `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`;
+  const appleItems = await fetchDeliriusGoogle(appleQuery, apiBase, debugLogs);
+  if (appleItems && appleItems.length > 0) {
+    debugLogs.push(`[info] [Apple Podcasts] Scanning ${appleItems.length} Google search entries for Apple Podcasts...`);
+    for (const item of appleItems) {
+      const itemTitle = item.title || "";
+      const itemUrl = item.url || "";
+      const isMatch = isTitleMatch(episodeTitle, itemTitle);
+      debugLogs.push(` [Apple Podcast Scan] Checked URL: "${itemUrl}" | Title: "${itemTitle}" | Title Match? ${isMatch ? "YES" : "NO"}`);
+      if (itemUrl.includes("podcasts.apple.com") && (itemUrl.includes("/podcast/") || itemUrl.includes("/id"))) {
+        const isMainShow = itemUrl.endsWith("/id1552319253") || itemUrl.endsWith("/id1552319253/");
+        if (!isMainShow && isMatch) {
+          applePodcastsUrl = itemUrl;
+          debugLogs.push(`[success] [Apple Podcasts] Resolved exact level episode link: ${applePodcastsUrl}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // 4. Default Fail-Safes if not found
   if (!spotifyUrl) {
     spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
     debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
