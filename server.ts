@@ -736,185 +736,171 @@ app.post("/api/episode-meta/:id", async (req, res) => {
   });
 });
 
-async function searchSinglePlatform(
-  service: "Spotify" | "Apple" | "YouTube",
-  query: string,
-  episodeTitle: string
-): Promise<{ url: string; debugLogs: string[] }> {
-  const debugLogs: string[] = [];
-  debugLogs.push(`[info] [${service}] Targeted search query: \`${query}\``);
-
-  let attempts = 0;
-  const maxAttempts = 3;
-  let delayMs = 3000;
-
-  while (attempts < maxAttempts) {
-    try {
-      const ai = getGemini();
-      const prompt = `Perform a web search using Google Search Grounding with exactly the following query:
-"${query}"
-
-Find the official, exact URL for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" on ${service}.
-
-Requirements:
-1. Return ONLY the direct URL found.
-2. It must be a real, complete, official ${service} link.
-3. If no specific episode link exists or you cannot find it, return NOT_FOUND. Do not invent any URL.`;
-
-      const modelResponse = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }]
-        }
-      });
-
-      const outputText = modelResponse.text || "";
-      debugLogs.push(`[info] [${service}] Generated Response: ${outputText.trim()}`);
-
-      const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
-      if (metadata) {
-        if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
-          debugLogs.push(`[info] [${service}] Real Queries Run: ${JSON.stringify(metadata.webSearchQueries)}`);
-        }
-        if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
-          metadata.groundingChunks.forEach((chunk) => {
-            if (chunk.web?.uri) {
-              debugLogs.push(` [source] "${chunk.web.title || 'Untitled'}" -> ${chunk.web.uri}`);
-            }
-          });
-        }
-      }
-
-      let foundUrl = "";
-      const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
-      const foundUrls = outputText.match(urlRegex) || [];
-
-      for (const rawUrl of foundUrls) {
-        const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
-        if (service === "Spotify" && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
-          foundUrl = cleanUrl;
-          break;
-        } else if (service === "Apple" && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
-          foundUrl = cleanUrl;
-          break;
-        } else if (service === "YouTube" && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
-          foundUrl = cleanUrl;
-          break;
-        }
-      }
-
-      // Secondary scan chunks
-      if (!foundUrl && metadata?.groundingChunks) {
-        for (const chunk of metadata.groundingChunks) {
-          const uri = chunk.web?.uri;
-          if (uri && typeof uri === "string") {
-            const cleanUri = uri.trim();
-            if (service === "Spotify" && cleanUri.includes("spotify.com") && (cleanUri.includes("/episode/") || cleanUri.includes("/track/"))) {
-              foundUrl = cleanUri;
-              break;
-            } else if (service === "Apple" && cleanUri.includes("podcasts.apple.com") && (cleanUri.includes("/podcast/") || cleanUri.includes("/id"))) {
-              foundUrl = cleanUri;
-              break;
-            } else if (service === "YouTube" && (cleanUri.includes("youtube.com") || cleanUri.includes("youtu.be"))) {
-              foundUrl = cleanUri;
-              break;
-            }
-          }
-        }
-      }
-
-      if (foundUrl) {
-        debugLogs.push(`[success] [${service}] Resolved exact link: ${foundUrl}`);
-        return { url: foundUrl, debugLogs };
-      } else {
-        debugLogs.push(`[warning] [${service}] No episode-specific link found.`);
-        return { url: "", debugLogs };
-      }
-
-    } catch (err: any) {
-      const errStr = err.message || JSON.stringify(err);
-      const isRateLimit = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.includes("RESOURCE_EXHAUSTED");
-
-      if (isRateLimit && attempts < maxAttempts - 1) {
-        attempts++;
-        debugLogs.push(`[warning] [${service}] Hit rate limit (429/quota). Retrying in ${delayMs / 1000}s (Attempt ${attempts}/${maxAttempts})...`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        delayMs *= 2; // exponential backoff
-        continue;
-      }
-
-      debugLogs.push(`[error] [${service}] Failed during search: ${errStr}`);
-      return { url: "", debugLogs };
-    }
-  }
-
-  debugLogs.push(`[error] [${service}] Exceeded maximum retry attempts due to persistent rate/quota limits.`);
-  return { url: "", debugLogs };
-}
-
 async function searchPlatformLinks(episodeTitle: string): Promise<{ spotifyUrl: string; applePodcastsUrl: string; youtubeUrl: string; debugLogs: string[] }> {
   const debugLogs: string[] = [];
-  debugLogs.push(`[info] Starting targeted sequential web search scans with site filters for: "${episodeTitle}"`);
+  debugLogs.push(`[info] Starting optimized targeted web search scans for: "${episodeTitle}"`);
 
   let spotifyUrl = "";
   let applePodcastsUrl = "";
   let youtubeUrl = "";
 
-  try {
-    // Run sequentially with pauses in between to avoid concurrent 429 quota exceptions
-    const spotifyRes = await searchSinglePlatform("Spotify", `site:spotify.com "Rena Malik" ${episodeTitle}`, episodeTitle);
-    debugLogs.push(...spotifyRes.debugLogs);
-    spotifyUrl = spotifyRes.url;
-
-    debugLogs.push(`[info] Pausing 2.5 seconds before starting Apple search to prevent quota collisions...`);
-    await new Promise(resolve => setTimeout(resolve, 2500));
-
-    const appleRes = await searchSinglePlatform("Apple", `site:podcasts.apple.com "Rena Malik" ${episodeTitle}`, episodeTitle);
-    debugLogs.push(...appleRes.debugLogs);
-    applePodcastsUrl = appleRes.url;
-
-    debugLogs.push(`[info] Pausing 2.5 seconds before starting YouTube search to prevent quota collisions...`);
-    await new Promise(resolve => setTimeout(resolve, 2500));
-
-    const youtubeRes = await searchSinglePlatform("YouTube", `site:youtube.com "Rena Malik" ${episodeTitle}`, episodeTitle);
-    debugLogs.push(...youtubeRes.debugLogs);
-    youtubeUrl = youtubeRes.url;
-
-    // Fallbacks if not found
-    if (!spotifyUrl) {
-      spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
-      debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
+  // 1. Direct YouTube Data API Search (if configured)
+  const youtubeApiKey = process.env.YOUTUBE_API_KEY;
+  if (youtubeApiKey) {
+    debugLogs.push(`[info] [YouTube] API Key detected. Launching high-precision native search...`);
+    try {
+      const youtubeSearchQuery = `Rena Malik ${episodeTitle}`;
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=3&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
+      
+      const response = await fetch(searchUrl);
+      if (response.ok) {
+        const data: any = await response.json();
+        if (data && data.items && data.items.length > 0) {
+          const firstVideo = data.items[0];
+          const videoId = firstVideo.id?.videoId;
+          if (videoId) {
+            youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+            debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${firstVideo.snippet?.title || 'Unknown'}"`);
+          } else {
+            debugLogs.push(`[warning] [YouTube] API returned items but videoId was not present.`);
+          }
+        } else {
+          debugLogs.push(`[warning] [YouTube] No items returned from the search API.`);
+        }
+      } else {
+        debugLogs.push(`[error] [YouTube] API request failed with status: ${response.status}`);
+      }
+    } catch (ytErr: any) {
+      debugLogs.push(`[error] [YouTube] Exception during lookup: ${ytErr.message || ytErr}`);
     }
-    if (!applePodcastsUrl) {
-      applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
-      debugLogs.push(`[warning] Apple Podcasts episode-specific link search failed. Defaulted to show: ${applePodcastsUrl}`);
-    }
-    if (!youtubeUrl) {
-      youtubeUrl = "https://www.youtube.com/@RenaMalikMD";
-      debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
-    }
-
-    return {
-      spotifyUrl,
-      applePodcastsUrl,
-      youtubeUrl,
-      debugLogs
-    };
-
-  } catch (err: any) {
-    const errorMsg = err.message || JSON.stringify(err);
-    debugLogs.push(`[error] Joint search operation failed: ${errorMsg}`);
+  } else {
+    debugLogs.push(`[info] [YouTube] API key not found in environment. Will resolve via Gemini grounding instead.`);
   }
 
-  const fallbackSpotify = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
-  const fallbackApple = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
-  const fallbackYoutube = "https://www.youtube.com/@RenaMalikMD";
+  // 2. Combine the remaining searches into ONE SINGLE Gemini call to reduce quota usage by 300%
+  const platformsToSearch: string[] = [];
+  if (!spotifyUrl) platformsToSearch.push("Spotify");
+  if (!applePodcastsUrl) platformsToSearch.push("Apple Podcasts");
+  if (!youtubeUrl) platformsToSearch.push("YouTube");
+
+  if (platformsToSearch.length > 0) {
+    debugLogs.push(`[info] Gemini Grounding requested for: ${platformsToSearch.join(", ")}`);
+    
+    let attempts = 0;
+    const maxAttempts = 2;
+    let delayMs = 3000;
+    let success = false;
+
+    while (attempts < maxAttempts && !success) {
+      try {
+        const ai = getGemini();
+        
+        let instructions = `Perform a web search using Google Search Grounding to find the official, direct episode page URLs for the podcast episode titled "${episodeTitle}" of "The Rena Malik Show" (hosted by Dr. Rena Malik) on the following platform(s):\n`;
+        if (!spotifyUrl) {
+          instructions += `- Spotify: site:spotify.com "Rena Malik" ${episodeTitle}\n`;
+        }
+        if (!applePodcastsUrl) {
+          instructions += `- Apple Podcasts: site:podcasts.apple.com "Rena Malik" ${episodeTitle}\n`;
+        }
+        if (!youtubeUrl) {
+          instructions += `- YouTube: site:youtube.com "Rena Malik" ${episodeTitle}\n`;
+        }
+
+        instructions += `
+Requirements:
+1. You MUST find and return the exact episode URLs.
+2. If any link is not found, state "Spotify: NOT_FOUND" or "Apple: NOT_FOUND" or "YouTube: NOT_FOUND". Do not invent false links.
+3. Your output must clearly list:
+Spotify: [url]
+Apple: [url]
+YouTube: [url]`;
+
+        debugLogs.push(`[info] [Gemini] Dispatching consolidated search (Attempt ${attempts + 1}/${maxAttempts})...`);
+        
+        const modelResponse = await ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents: instructions,
+          config: {
+            tools: [{ googleSearch: {} }]
+          }
+        });
+
+        const outputText = modelResponse.text || "";
+        debugLogs.push(`[info] [Gemini] Retrieved response successfully.`);
+
+        const metadata = modelResponse.candidates?.[0]?.groundingMetadata;
+        if (metadata) {
+          if (metadata.webSearchQueries && Array.isArray(metadata.webSearchQueries)) {
+            debugLogs.push(`[info] [Gemini] Grounding queries run: ${JSON.stringify(metadata.webSearchQueries)}`);
+          }
+          if (metadata.groundingChunks && Array.isArray(metadata.groundingChunks)) {
+            metadata.groundingChunks.forEach((chunk) => {
+              if (chunk.web?.uri) {
+                const title = chunk.web.title || "Untitled";
+                const uri = chunk.web.uri;
+                debugLogs.push(` [source] "${title}" -> ${uri}`);
+              }
+            });
+          }
+        }
+
+        // Search both text response and grounding metadata sources to extract URLs
+        const allTextAndUrls = outputText + " " + (metadata?.groundingChunks?.map(c => c.web?.uri).filter(Boolean).join(" ") || "");
+        const urlRegex = /(https?:\/\/[^\s\)\}\}\]\"\'>]+)/gi;
+        const foundUrls = allTextAndUrls.match(urlRegex) || [];
+
+        for (const rawUrl of foundUrls) {
+          const cleanUrl = rawUrl.trim().replace(/[.,;\)\}\]]+$/, "");
+          if (!spotifyUrl && cleanUrl.includes("spotify.com") && (cleanUrl.includes("/episode/") || cleanUrl.includes("/track/"))) {
+            spotifyUrl = cleanUrl;
+            debugLogs.push(`[success] [Spotify] Extracted exact link: ${spotifyUrl}`);
+          } else if (!applePodcastsUrl && cleanUrl.includes("podcasts.apple.com") && (cleanUrl.includes("/podcast/") || cleanUrl.includes("/id"))) {
+            applePodcastsUrl = cleanUrl;
+            debugLogs.push(`[success] [Apple] Extracted exact link: ${applePodcastsUrl}`);
+          } else if (!youtubeUrl && (cleanUrl.includes("youtube.com") || cleanUrl.includes("youtu.be"))) {
+            youtubeUrl = cleanUrl;
+            debugLogs.push(`[success] [YouTube] Extracted exact link: ${youtubeUrl}`);
+          }
+        }
+
+        success = true;
+
+      } catch (err: any) {
+        const errStr = err.message || JSON.stringify(err);
+        const isRateLimit = errStr.includes("429") || errStr.toLowerCase().includes("quota") || errStr.includes("RESOURCE_EXHAUSTED");
+
+        if (isRateLimit && attempts < maxAttempts - 1) {
+          attempts++;
+          debugLogs.push(`[warning] [Gemini] Hit rate limit. Retrying in ${delayMs / 1000}s...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs *= 2;
+          continue;
+        }
+
+        debugLogs.push(`[error] [Gemini] Search failed: ${errStr}`);
+        break; // Break loop on non-retryable error
+      }
+    }
+  }
+
+  // 3. Fallbacks if not found after searches
+  if (!spotifyUrl) {
+    spotifyUrl = "https://open.spotify.com/show/0O7zX6qBv99zDCOV02A7w7";
+    debugLogs.push(`[warning] Spotify episode-specific link search failed. Defaulted to show: ${spotifyUrl}`);
+  }
+  if (!applePodcastsUrl) {
+    applePodcastsUrl = "https://podcasts.apple.com/us/podcast/the-rena-malik-show/id1552319253";
+    debugLogs.push(`[warning] Apple Podcasts episode-specific link search failed. Defaulted to show: ${applePodcastsUrl}`);
+  }
+  if (!youtubeUrl) {
+    youtubeUrl = "https://www.youtube.com/@RenaMalikMD";
+    debugLogs.push(`[warning] YouTube video-specific link search failed. Defaulted to channel: ${youtubeUrl}`);
+  }
 
   return {
-    spotifyUrl: fallbackSpotify,
-    applePodcastsUrl: fallbackApple,
-    youtubeUrl: fallbackYoutube,
+    spotifyUrl,
+    applePodcastsUrl,
+    youtubeUrl,
     debugLogs
   };
 }
