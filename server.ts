@@ -850,6 +850,57 @@ async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): 
     debugLogs.push(`[error] [Apple Podcasts] Exception during search: ${appleErr.message || appleErr}`);
   }
 
+  // 1.5 Spotify Episode Search via SerpAPI
+  const serpapiApiKey = process.env.SERP_API_KEY || process.env.SERPAPI_API_KEY;
+  if (serpapiApiKey) {
+    debugLogs.push(`[info] [Spotify/SerpAPI] SERP_API_KEY detected. Searching SerpAPI for Spotify link...`);
+    try {
+      const serpQuery = `site:open.spotify.com/episode "The Rena Malik Show" ${episodeTitle}`;
+      const searchUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(serpQuery)}&api_key=${serpapiApiKey}`;
+      debugLogs.push(`[info] [Spotify/SerpAPI] Calling SerpAPI Google Search...`);
+      const response = await fetch(searchUrl);
+      if (response.ok) {
+        const data: any = await response.json();
+        if (data && data.organic_results && data.organic_results.length > 0) {
+          debugLogs.push(`[info] [Spotify/SerpAPI] Found ${data.organic_results.length} organic search results.`);
+          let bestResult = null;
+          for (const result of data.organic_results) {
+            const link = result.link || "";
+            const title = result.title || "";
+            debugLogs.push(` [SerpAPI Scan] Candidate Link: "${link}" | Title: "${title}"`);
+            
+            if (link.includes("open.spotify.com/episode")) {
+              bestResult = result;
+              debugLogs.push(`[success] [Spotify/SerpAPI] Found matching Spotify episode link: ${link}`);
+              break;
+            }
+          }
+          if (bestResult) {
+            spotifyUrl = bestResult.link;
+          } else {
+            // Check any open.spotify.com link as fallback
+            for (const result of data.organic_results) {
+              const link = result.link || "";
+              if (link.includes("open.spotify.com")) {
+                spotifyUrl = link;
+                debugLogs.push(`[warning] [Spotify/SerpAPI] No exact episode URL found, defaulting to general Spotify link: ${link}`);
+                break;
+              }
+            }
+          }
+        } else {
+          debugLogs.push(`[warning] [Spotify/SerpAPI] No organic results returned from SerpAPI.`);
+        }
+      } else {
+        debugLogs.push(`[error] [Spotify/SerpAPI] SerpAPI request failed with status: ${response.status}`);
+      }
+    } catch (serpErr: any) {
+      debugLogs.push(`[error] [Spotify/SerpAPI] Exception during search: ${serpErr.message || serpErr}`);
+    }
+  } else {
+    debugLogs.push(`[info] [Spotify/SerpAPI] No SERP_API_KEY found in environment.`);
+  }
+
   // 2. Direct YouTube Data API Search (if configured)
   const youtubeApiKey = process.env.YOUTUBE_API_KEY;
   if (youtubeApiKey) {
