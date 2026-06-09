@@ -743,6 +743,7 @@ function isTitleMatch(originalTitle: string, foundTitle: string): boolean {
   const cleanWords = (text: string) => {
     return text
       .toLowerCase()
+      .replace(/^(moment|trailer|teaser|intro|clip|episode\s*\d+)\s*[:|\-–—]/i, " ")
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
       .filter(w => w.length > 2 && !["the", "and", "for", "with", "from", "you", "your", "that", "this", "moment", "show", "rena", "malik", "episode", "podcast", "channel"].includes(w));
@@ -935,9 +936,47 @@ async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): 
   if (youtubeApiKey) {
     debugLogs.push(`[info] [YouTube] API Key detected. Launching high-precision native search...`);
     try {
-      const youtubeSearchQuery = `"Rena Malik" ${episodeTitle}`;
-      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(youtubeSearchQuery)}&type=video&key=${youtubeApiKey}`;
-      
+      // 2.1 Deeply clean and process title for youtubeSearchQuery to avoid prefixes like "Moment:"
+      let cleanedYTTitle = episodeTitle;
+      cleanedYTTitle = cleanedYTTitle.replace(/^(Moment|Trailer|Teaser|Intro|Clip|Episode\s*\d+)\s*[:|\-–—]/i, "").trim();
+
+      const ytParts = cleanedYTTitle.split(/\s+-\s+|\s*\|\s*|[\(\)\[\]]|\s+ft\.\s+|\s+feat\.\s+/i);
+      let ytQueryPart = cleanedYTTitle;
+      for (const p of ytParts) {
+        const trimmed = p.trim();
+        if (trimmed.length >= 8) {
+          ytQueryPart = trimmed;
+          break;
+        }
+      }
+
+      // Limit query to 8 words for higher relevance and clean special punctuation
+      ytQueryPart = ytQueryPart.replace(/[:|"'“”–—\-\[\]()&]/g, " ").replace(/\s+/g, " ").trim();
+      const ytWords = ytQueryPart.split(/\s+/);
+      if (ytWords.length > 8) {
+        ytQueryPart = ytWords.slice(0, 8).join(" ");
+      }
+
+      // 2.2 Resolve Channel ID dynamically using configured handle or fallback to default
+      let channelId = "UCV66hp0qxx2Xq273N0bo7uQ"; // Dr. Rena Malik MD official Channel ID
+      const handle = process.env.YOUTUBE_CHANNEL_HANDLE || "@RenaMalikMD";
+      try {
+        const channelsUrl = `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${youtubeApiKey}`;
+        const channelsRes = await fetch(channelsUrl);
+        if (channelsRes.ok) {
+          const channelsData = await channelsRes.json();
+          if (channelsData.items && channelsData.items.length > 0) {
+            channelId = channelsData.items[0].id;
+            debugLogs.push(`[info] [YouTube] Dynamically resolved channelId for handle "${handle}": ${channelId}`);
+          }
+        }
+      } catch (err: any) {
+        debugLogs.push(`[warning] [YouTube] Could not dynamically resolve channel ID, using default: ${err.message || err}`);
+      }
+
+      const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=20&q=${encodeURIComponent(ytQueryPart)}&channelId=${channelId}&type=video&key=${youtubeApiKey}`;
+      debugLogs.push(`[info] [YouTube] Calling search URL: ${searchUrl.replace(youtubeApiKey, "API_KEY_HIDDEN")}`);
+
       const response = await fetch(searchUrl);
       if (response.ok) {
         const data: any = await response.json();
@@ -962,13 +1001,20 @@ async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): 
               debugLogs.push(`[success] [YouTube] Resolved exact video via YouTube search API: ${youtubeUrl} | Title: "${matchedItem.snippet?.title || 'Unknown'}"`);
             }
           } else {
-            debugLogs.push(`[warning] [YouTube] None of the top ${data.items.length} search results passed title similarity checking. Rejecting potential mismatch.`);
+            // Safe fallback to first candidate if similarity matched 1 significant word, or just use the first item in the listing
+            const firstItem = data.items[0];
+            const videoId = firstItem.id?.videoId;
+            if (videoId) {
+              youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+              debugLogs.push(`[warning] [YouTube] No perfect title similarity match found. Defaulting to first video candidate on channel: "${firstItem.snippet?.title || 'Unknown'}"`);
+            }
           }
         } else {
           debugLogs.push(`[warning] [YouTube] No items returned from the search API.`);
         }
       } else {
-        debugLogs.push(`[error] [YouTube] API request failed with status: ${response.status}`);
+        const errorText = await response.text();
+        debugLogs.push(`[error] [YouTube] API request failed with status: ${response.status}. Error: ${errorText}`);
       }
     } catch (ytErr: any) {
       debugLogs.push(`[error] [YouTube] Exception during lookup: ${ytErr.message || ytErr}`);
