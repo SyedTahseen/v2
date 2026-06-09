@@ -855,10 +855,34 @@ async function searchPlatformLinks(episodeTitle: string, episodeGuid?: string): 
   if (serpapiApiKey) {
     debugLogs.push(`[info] [Spotify/SerpAPI] SERP_API_KEY detected. Searching SerpAPI for Spotify link...`);
     try {
-      // Split title at typical punctuation separators to get the main/first part of the title
-      const parts = episodeTitle.split(/[?:|()\[\]-]/);
-      const mainTitlePart = parts[0]?.trim() || episodeTitle;
-      const searchQueryPart = mainTitlePart.length >= 8 ? mainTitlePart : episodeTitle;
+      // 1. Deeply clean and process title for SerpQuery to avoid getting caught on prefixes like "Moment:"
+      let cleanedTitle = episodeTitle;
+      
+      // Strip common prefixes like "Moment:", "Trailer:", "Episode 123:"
+      // Use standard regex matching to strip prefixes dynamically while remaining robust
+      cleanedTitle = cleanedTitle.replace(/^(Moment|Trailer|Teaser|Intro|Clip|Episode\s*\d+)\s*[:|\-–—]/i, "").trim();
+      
+      // Split by common separators (spaces surrounding dash/pipe, brackets, colons) instead of single hyphens so "30-Second" remains intact!
+      const parts = cleanedTitle.split(/\s+-\s+|\s*\|\s*|[\(\)\[\]]|\s+ft\.\s+|\s+feat\.\s+/i);
+      
+      // Find the first substantial part in the split list
+      let searchQueryPart = cleanedTitle;
+      for (const p of parts) {
+        const trimmed = p.trim();
+        if (trimmed.length >= 8) {
+          searchQueryPart = trimmed;
+          break;
+        }
+      }
+      
+      // Clean special query operators or syntax to make google query safe and effective
+      searchQueryPart = searchQueryPart.replace(/[:|"'“”–—\-\[\]()&]/g, " ").replace(/\s+/g, " ").trim();
+      
+      // Limit to first 8 words to avoid dilute google queries on very long titles
+      const words = searchQueryPart.split(/\s+/);
+      if (words.length > 8) {
+        searchQueryPart = words.slice(0, 8).join(" ");
+      }
       
       const serpQuery = `site:open.spotify.com/episode "Rena Malik" ${searchQueryPart}`;
       const searchUrl = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(serpQuery)}&api_key=${serpapiApiKey}`;
