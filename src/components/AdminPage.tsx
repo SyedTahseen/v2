@@ -280,7 +280,8 @@ export default function AdminPage({ onBackToMain, currentPath }: AdminPageProps)
             episodeId: ep.id,
             audioUrl: ep.audioUrl,
             prompt: customPrompt,
-            title: ep.title
+            title: ep.title,
+            guid: ep.guid
           })
         });
 

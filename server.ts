@@ -1071,7 +1071,7 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
     return res.status(401).json({ success: false, message: "Unauthorized. Please authenticate first." });
   }
 
-  const { episodeId, audioUrl, prompt: customPrompt, title } = req.body || {};
+  const { episodeId, audioUrl, prompt: customPrompt, title, guid } = req.body || {};
   if (!episodeId || !audioUrl) {
     return res.status(400).json({ success: false, message: "Missing episodeId or audioUrl" });
   }
@@ -1196,7 +1196,7 @@ app.post("/api/admin/generate-episode-meta", async (req, res) => {
     if (title) {
       try {
         console.log(`[Gemini Integration] Triggering web search grounding for platform links under: "${title}"`);
-        const links = await searchPlatformLinks(title);
+        const links = await searchPlatformLinks(title, guid);
         spotifyUrl = links.spotifyUrl;
         applePodcastsUrl = links.applePodcastsUrl;
         youtubeUrl = links.youtubeUrl;
